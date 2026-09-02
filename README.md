@@ -32,6 +32,10 @@ The button has three states:
 | Pulsing outline | Connecting |
 | Animated bars | Live — it's listening; click to stop |
 
+Keyboard: **Cmd+Shift+H** (Ctrl+Shift+H on Windows/Linux) starts or stops a
+call from anywhere in bb; **Cmd+Shift+M** mutes/unmutes during a call. Both are
+also in the quick palette (Cmd+Shift+P) under Handsfree.
+
 ## Things you can say
 
 - *"What's running right now?"* — lists your live threads

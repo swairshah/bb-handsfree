@@ -23,7 +23,13 @@ import { AudioSettings, BehaviorSettings, ModelsSettings } from "./settings-sect
 import { cn } from "@/lib/utils";
 import { AUDIO_DEVICE_STORAGE_KEY } from "./audio-devices";
 import { MicIcon, StopIcon, WaveformIcon, useCallElapsed } from "./voice-chrome";
+import { clientDescriptor } from "./client-identity";
+import { isMacPlatform, matchShortcut, shortcutLabel } from "./shortcuts";
 import "./app.css";
+
+const MAC = isMacPlatform(clientDescriptor.platform);
+const TOGGLE_HINT = shortcutLabel("toggle", MAC);
+const MUTE_HINT = shortcutLabel("mute", MAC);
 
 function AideVoiceButton() {
   const rpc = useRpc<typeof rpcContract>();
@@ -131,7 +137,7 @@ function AideVoiceButton() {
         <button
           type="button"
           aria-label={muted ? "Unmute Aide microphone" : "Mute Aide microphone"}
-          title={muted ? "Unmute" : "Mute"}
+          title={`${muted ? "Unmute" : "Mute"} (${MUTE_HINT})`}
           onPointerDown={(event) => event.button === 0 && event.preventDefault()}
           onClick={() => voiceAgent.toggleMuteFromSurface()}
           className={cn(
@@ -166,7 +172,7 @@ function AideVoiceButton() {
         <button
           type="button"
           aria-label="Stop Aide voice session"
-          title="Stop"
+          title={`Stop (${TOGGLE_HINT})`}
           onPointerDown={(event) => event.button === 0 && event.preventDefault()}
           onClick={() => voiceAgent.stopFromSurface()}
           className="flex size-7 items-center justify-center text-muted-foreground transition-colors hover:bg-destructive/15 hover:text-destructive"
@@ -181,7 +187,7 @@ function AideVoiceButton() {
     <button
       type="button"
       aria-label="Start Aide voice agent"
-      title="Talk to Aide"
+      title={`Talk to Aide (${TOGGLE_HINT})`}
       onPointerDown={(event) => event.button === 0 && event.preventDefault()}
       onClick={() => voiceAgent.toggleFromSurface()}
       className={cn(
@@ -234,7 +240,7 @@ function SidebarVoiceBar() {
       <button
         type="button"
         aria-label={active ? "Stop Aide voice agent" : "Start Aide voice agent"}
-        title={active ? "Stop Aide" : "Talk to Aide"}
+        title={`${active ? "Stop Aide" : "Talk to Aide"} (${TOGGLE_HINT})`}
         onClick={() => voiceAgent.toggleFromSurface()}
         className={cn(
           "flex h-7 flex-1 items-center justify-center gap-1.5 rounded-md border border-border px-2 text-xs font-medium transition-colors",
@@ -253,7 +259,7 @@ function SidebarVoiceBar() {
         <button
           type="button"
           aria-label={muted ? "Unmute Aide microphone" : "Mute Aide microphone"}
-          title={muted ? "Unmute" : "Mute"}
+          title={`${muted ? "Unmute" : "Mute"} (${MUTE_HINT})`}
           onClick={() => voiceAgent.toggleMuteFromSurface()}
           className={cn(
             "flex size-7 shrink-0 items-center justify-center rounded-md border border-border transition-colors",
@@ -352,6 +358,17 @@ export default definePluginApp((app) => {
   // Optional: a voice bar above the thread list, for anyone who wants an
   // always-visible control. Off by default is not possible (registering
   // activates it), but users can pin BB's list under Settings → Appearance.
+  app.slots.commandPaletteAction({
+    id: "toggle-voice",
+    title: `Handsfree: start/stop voice (${TOGGLE_HINT})`,
+    run: () => voiceAgent.toggleFromSurface(),
+  });
+  app.slots.commandPaletteAction({
+    id: "toggle-mute",
+    title: `Handsfree: mute/unmute (${MUTE_HINT})`,
+    isAvailable: () => voiceAgent.getState() === "live" || voiceAgent.getState() === "muted",
+    run: () => voiceAgent.toggleMuteFromSurface(),
+  });
   app.slots.experimental_threadList({
     id: "voice-bar",
     title: "Handsfree voice bar",
@@ -370,6 +387,13 @@ export default definePluginApp((app) => {
       // Release the mic synchronously before the page tears down. Without this,
       // a hard reload (Cmd+R) leaves the previous page holding the input device,
       // so the fresh page enumerates zero microphones until the OS reclaims it.
+      window.addEventListener("keydown", (event) => {
+        const action = matchShortcut(event, MAC);
+        if (!action) return;
+        event.preventDefault();
+        if (action === "toggle") voiceAgent.toggleFromSurface();
+        else voiceAgent.toggleMuteFromSurface();
+      }, { signal });
       window.addEventListener("pagehide", () => voiceAgent.stop(), { signal });
       signal.addEventListener("abort", () => voiceAgent.stop());
       return () => voiceAgent.stop();
