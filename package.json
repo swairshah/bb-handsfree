@@ -1,6 +1,6 @@
 {
   "name": "bb-plugin-handsfree",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "type": "module",
   "scripts": {
     "test": "node --test audio-devices.test.ts voice-agent.test.ts shortcuts.test.ts",
