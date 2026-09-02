@@ -132,6 +132,7 @@ function AideVoiceButton() {
           type="button"
           aria-label={muted ? "Unmute Aide microphone" : "Mute Aide microphone"}
           title={muted ? "Unmute" : "Mute"}
+          onPointerDown={(event) => event.button === 0 && event.preventDefault()}
           onClick={() => voiceAgent.toggleMuteFromSurface()}
           className={cn(
             "flex size-7 items-center justify-center transition-colors",
@@ -166,6 +167,7 @@ function AideVoiceButton() {
           type="button"
           aria-label="Stop Aide voice session"
           title="Stop"
+          onPointerDown={(event) => event.button === 0 && event.preventDefault()}
           onClick={() => voiceAgent.stopFromSurface()}
           className="flex size-7 items-center justify-center text-muted-foreground transition-colors hover:bg-destructive/15 hover:text-destructive"
         >
@@ -180,6 +182,7 @@ function AideVoiceButton() {
       type="button"
       aria-label="Start Aide voice agent"
       title="Talk to Aide"
+      onPointerDown={(event) => event.button === 0 && event.preventDefault()}
       onClick={() => voiceAgent.toggleFromSurface()}
       className={cn(
         "flex size-7 shrink-0 items-center justify-center rounded-full border transition-colors",
