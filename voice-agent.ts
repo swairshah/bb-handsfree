@@ -244,6 +244,18 @@ export class VoiceAgent {
   private remoteExpiryTimer: ReturnType<typeof setInterval> | null = null;
   /** Guards the once-per-realm `client.hello` observability record. */
   private helloed = false;
+  /**
+   * Opens a thread in the Handsfree page's companion split pane. Set by the page
+   * surface independently of `bindings` (so a composer's bind() can't clobber it)
+   * and cleared on unmount. Null in realms without a mounted Handsfree page.
+   */
+  private companionOpener: ((threadId: string) => void) | null = null;
+  /**
+   * Opens an http(s) URL in the bb browser (from `useBbNavigate().openUrl`). Set
+   * by any mounted voice surface, independent of `bindings`. Works from any realm,
+   * so no relay is needed — the owner realm's own surface sets it.
+   */
+  private urlOpener: ((url: string) => boolean) | null = null;
   /** The most recent tool call, so a suspend/teardown can name its likely cause. */
   private lastTool: { name: string; at: number } | null = null;
 
@@ -512,6 +524,42 @@ export class VoiceAgent {
       this.remotePresence = null;
       this.disarmRemoteExpiry();
       this.emitChange();
+    }
+  }
+
+  // ---- companion pane (the Handsfree page's right split pane) ----
+
+  /** The Handsfree page registers (and clears) its pane opener here. */
+  setCompanionOpener(opener: ((threadId: string) => void) | null) {
+    this.companionOpener = opener;
+  }
+
+  /** Any voice surface registers the bb-browser opener here. */
+  setUrlOpener(opener: ((url: string) => boolean) | null) {
+    this.urlOpener = opener;
+  }
+
+  /**
+   * Show a thread in the companion pane. If this realm hosts the page, open it
+   * directly; otherwise relay over the bus so whichever realm has the mounted
+   * page opens it (the call may be owned by a composer realm with no pane).
+   */
+  private openCompanion(threadId: string) {
+    if (this.companionOpener) {
+      this.companionOpener(threadId);
+      return;
+    }
+    const rpc = this.bindings?.rpc;
+    if (rpc) {
+      void rpc.call("sendCompanion", { threadId, client: clientId, realm: realmId }).catch(() => undefined);
+    }
+  }
+
+  /** Handle a relayed companion request; only a realm with a mounted page acts. */
+  applyCompanion(payload: unknown) {
+    const threadId = (payload as { threadId?: unknown } | null)?.threadId;
+    if (typeof threadId === "string" && threadId && this.companionOpener) {
+      this.companionOpener(threadId);
     }
   }
 
@@ -984,6 +1032,25 @@ export class VoiceAgent {
         bindings.composer.updateText((current) => (current ? `${current}\n${text}` : text));
         output = "Text appended to composer.";
       }
+    } else if (name === "show_thread") {
+      const threadId = String(args.thread_id ?? "");
+      if (!threadId) {
+        output = "No thread_id given.";
+      } else {
+        this.openCompanion(threadId);
+        output = "Opened the thread in the companion pane beside the conversation.";
+      }
+    } else if (name === "open_url") {
+      const url = String(args.url ?? "");
+      if (!url) {
+        output = "No url given.";
+      } else if (!this.urlOpener) {
+        output = "Can't open a browser from here right now.";
+      } else {
+        output = this.urlOpener(url)
+          ? "Opened the URL in the bb browser."
+          : "The bb browser couldn't open that URL.";
+      }
     } else if (
       name === "start_thread" &&
       !(typeof args.prompt === "string" && args.prompt.trim())
@@ -1007,7 +1074,7 @@ export class VoiceAgent {
       // call; have the model point the user to the tap target instead.
       this.logDiag("nav.blocked", { name });
       output =
-        "On mobile you can't navigate the app during a live call — it would background the call and cut the mic. Do NOT navigate. Instead, tell the user in one short sentence exactly what to tap to get there themselves.";
+        "On mobile you can't navigate the app during a live call — it would background the call and cut the mic. Do NOT navigate. If this is a thread, use show_thread to display it in the companion pane beside the call instead. Otherwise, tell the user in one short sentence what to tap.";
     } else {
       // These tools navigate (…→ threads.open) which would background a live
       // mobile call — tell the server not to focus so the work still happens but

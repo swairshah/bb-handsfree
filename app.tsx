@@ -10,6 +10,7 @@ import {
   definePluginApp,
   experimental_useSidebarThreadActions,
   useBbContext,
+  useBbNavigate,
   useComposer,
   useComposerView,
   useRealtime,
@@ -19,6 +20,7 @@ import type { PluginThreadListProps } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "./server";
 import { voiceAgent } from "./voice-agent";
 import { SessionsPanel } from "./sessions-panel";
+import { COMPANION_TAB, CompanionTab } from "./companion";
 import { AudioSettings, BehaviorSettings, ModelsSettings } from "./settings-sections";
 import { cn } from "@/lib/utils";
 import { AUDIO_DEVICE_STORAGE_KEY } from "./audio-devices";
@@ -63,6 +65,12 @@ function AideVoiceButton() {
   // Catch up immediately when this surface mounts (e.g. a realm rebuilt after
   // navigation), rather than waiting up to a heartbeat to learn a call is live.
   useEffect(() => voiceAgent.requestPresence(), []);
+
+  // Let the agent open URLs in the bb browser (works from any surface).
+  const navigate = useBbNavigate();
+  useEffect(() => {
+    voiceAgent.setUrlOpener((url) => navigate.openUrl(url));
+  }, [navigate]);
 
   // Thread-event notifications (digested; disabled via `notifications` setting).
   useRealtime("aide-thread-event", (payload) => {
@@ -341,6 +349,16 @@ export default definePluginApp((app) => {
     path: "sessions",
     component: SessionsPanel,
     experimental_sidebarAccessory: SidebarLiveIndicator,
+    // Prototype: a companion split pane that shows a bb thread beside the page.
+    fixedTabs: [
+      {
+        ...COMPANION_TAB,
+        title: "Companion",
+        icon: "PanelRight",
+        component: CompanionTab,
+        layout: "flush",
+      },
+    ],
   });
   // --- Global surface trial: multiple always-reachable triggers for the same
   // singleton call. All are pure toggles; the composer button owns the binding.

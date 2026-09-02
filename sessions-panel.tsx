@@ -6,14 +6,17 @@
 // (which collapses on mobile) or switch sidebars to talk.
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import {
+  experimental_useAppPanel,
   experimental_useSidebarThreadActions,
   useBbContext,
+  useBbNavigate,
   useRealtime,
   useRpc,
 } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "./server";
 import { voiceAgent } from "./voice-agent";
 import { MicIcon, StopIcon, WaveformIcon, useCallElapsed } from "./voice-chrome";
+import { COMPANION_TAB, CompanionControls } from "./companion";
 import { cn } from "@/lib/utils";
 
 interface DeviceInfo {
@@ -630,6 +633,7 @@ export function SessionsPanel() {
   const rpc = useRpc<typeof rpcContract>();
   const { threadId, projectId } = useBbContext();
   const sidebarActions = experimental_useSidebarThreadActions();
+  const appPanel = experimental_useAppPanel();
   useEscapeToClose();
 
   // The Handsfree page has no composer, so nothing else binds the voice agent
@@ -651,6 +655,24 @@ export function SessionsPanel() {
         }),
     });
   }, [rpc, threadId, projectId, sidebarActions]);
+
+  // Register the companion-pane opener OUTSIDE the voice binding, so a composer's
+  // bind() (which replaces the whole bindings object) can't clobber it. The agent's
+  // show_thread runs in whichever realm owns the call and relays over
+  // voice-companion; the realm with the page mounted (this one) opens the pane.
+  useEffect(() => {
+    voiceAgent.setCompanionOpener((id) =>
+      appPanel.openFixedTab({ surface: { kind: "current" }, tab: COMPANION_TAB, target: { threadId: id } }),
+    );
+    return () => voiceAgent.setCompanionOpener(null);
+  }, [appPanel]);
+  useRealtime("voice-companion", (payload) => voiceAgent.applyCompanion(payload));
+
+  // Open URLs in the bb browser (works from any surface; harmless duplicate set).
+  const navigate = useBbNavigate();
+  useEffect(() => {
+    voiceAgent.setUrlOpener((url) => navigate.openUrl(url));
+  }, [navigate]);
   const [sessions, setSessions] = useState<SessionRow[] | null>(null);
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -858,6 +880,7 @@ export function SessionsPanel() {
                 Settings
               </button>
             </div>
+            <CompanionControls className="rounded-md border border-dashed border-border/70 px-2.5 py-1.5" />
             {sessions && sessions.length > 0 ? (
               <div className="flex items-center gap-2">
                 <input

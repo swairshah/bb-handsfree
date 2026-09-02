@@ -223,6 +223,21 @@ export const rpcContract = defineRpcContract({
     output: z.object({ ok: z.literal(true) }).strict(),
   },
   /**
+   * Relay a "show this thread in the companion pane" request to whichever realm
+   * has the Handsfree page mounted (the call may be owned by a composer realm
+   * that has no pane of its own).
+   */
+  sendCompanion: {
+    input: z
+      .object({
+        threadId: z.string().min(1),
+        client: z.string().optional(),
+        realm: z.string().optional(),
+      })
+      .strict(),
+    output: z.object({ ok: z.literal(true) }).strict(),
+  },
+  /**
    * End a call authoritatively, without needing its owner realm to act — the
    * owner may be a frozen, backgrounded mobile webview that can no longer receive
    * commands. Marks the session stopped (so the list stops showing it live) and
@@ -392,12 +407,14 @@ function toolSchemas(pluginCommands: PluginCommandInfo[] = []) {
     // Handled locally in the bb app frontend, never reaches runTool:
     { type: "function", name: "set_composer_text", description: "Replace the text in the user's message composer (the box they type prompts into).", parameters: { type: "object", properties: { text: { type: "string" } }, required: ["text"] } },
     { type: "function", name: "append_composer_text", description: "Append text to the user's message composer.", parameters: { type: "object", properties: { text: { type: "string" } }, required: ["text"] } },
+    { type: "function", name: "show_thread", description: "Show a thread in the companion pane beside the conversation, WITHOUT navigating away — this keeps the voice call alive. Prefer this over focus_thread when the user wants to see a thread during a live call.", parameters: { type: "object", properties: { thread_id: { type: "string" } }, required: ["thread_id"] } },
+    { type: "function", name: "open_url", description: "Open an http(s) URL in the bb browser — e.g. a pull request, an issue, or docs the user asks to see. Only use a real, complete URL.", parameters: { type: "object", properties: { url: { type: "string" } }, required: ["url"] } },
   ];
 }
 
 const DEFAULT_PROMPT = `You are Aide, a concise voice operator for bb — the user's agentic IDE where coding agents run in threads inside projects.
 
-The user talks to you to drive bb hands-free. You can list/search/read threads, focus them on screen, spotlight or maximize panes, send messages to agent threads, start new threads, stop or archive threads, summarize diffs, and edit the user's prompt composer.
+The user talks to you to drive bb hands-free. You can list/search/read threads, focus them on screen, spotlight or maximize panes, send messages to agent threads, start new threads, stop or archive threads, summarize diffs, open browser pages, and edit the user's prompt composer.
 
 Rules:
 - Be extremely succinct. One short sentence by default ("Done.", "Focused.", "Sent."). Never narrate what you're about to do, never enumerate options, never restate the user's request. Add detail only when asked.
@@ -1155,7 +1172,7 @@ export default async function plugin(bb: BbPluginApi) {
       return { sdp: text };
     },
     async getTools() {
-      const local = new Set(["set_composer_text", "append_composer_text"]);
+      const local = new Set(["set_composer_text", "append_composer_text", "show_thread", "open_url"]);
       const pluginCommands = await exposedPluginCommands();
       return {
         tools: toolSchemas(pluginCommands).map((tool) => ({
@@ -1266,6 +1283,10 @@ export default async function plugin(bb: BbPluginApi) {
     },
     async sendVoiceCommand({ nonce, action, client, realm }) {
       bb.realtime.publish("voice-command", { nonce, action, client, realm });
+      return { ok: true as const };
+    },
+    async sendCompanion({ threadId, client, realm }) {
+      bb.realtime.publish("voice-companion", { threadId, client, realm });
       return { ok: true as const };
     },
     async forceStop({ nonce }) {
