@@ -154,8 +154,35 @@ test("grounds a thread notification in the latest completed result", () => {
 
   assert.match(logText, /Updated the notification prompt/);
   assert.match(instruction, /latest_result: "Updated the notification prompt/);
-  assert.match(instruction, /grounded only in each latest_result/);
+  assert.match(instruction, /Ground the summary only in latest_result/);
   assert.match(instruction, /Never guess from earlier conversation/);
+  assert.match(instruction, /every announcement must name its thread: start with the title/);
+});
+
+test("names every thread in a multi-thread digest so 'it finished' is never ambiguous", () => {
+  const { logText, instruction } = formatThreadNotices([
+    {
+      kind: "idle",
+      threadId: "thr_review",
+      title: "Review recent GitHub pull requests",
+      detail: "Both pull requests landed on main.",
+    },
+    {
+      kind: "failed",
+      threadId: "thr_vsix",
+      title: "Enable one-click plugin distribution",
+      detail: "Build script exited with status 1.",
+    },
+  ]);
+
+  assert.match(logText, /finished: Review recent GitHub pull requests/);
+  assert.match(logText, /failed: Enable one-click plugin distribution/);
+  assert.match(instruction, /title: "Review recent GitHub pull requests"/);
+  assert.match(instruction, /title: "Enable one-click plugin distribution"/);
+  assert.match(instruction, /every announcement must name its thread: start with the title/);
+  assert.match(instruction, /"<title> finished: <summary>" or "<title> failed: <summary>"/);
+  assert.match(instruction, /Never say just "it finished"/);
+  assert.match(instruction, /one short sentence per update/);
 });
 
 test("requires reading the thread when a completion has no result", () => {
