@@ -2,8 +2,9 @@
 //
 // The host renders a single declarative field (the secret OpenAI API key) and
 // then these custom sections below it. Everything the user tunes day-to-day —
-// which model and voice to use, whether Aide announces thread events, and the
-// microphone — lives here as curated sections instead of a flat auto-form.
+// which model and voice to use, whether Aide announces thread events, the
+// microphone, and the keyboard shortcuts — lives here as curated sections
+// instead of a flat auto-form.
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { useRealtime, useRpc } from "@get-bb/plugin-sdk/app";
 import { toast } from "sonner";
@@ -29,6 +30,21 @@ import {
 } from "./models";
 import { voiceAgent } from "./voice-agent";
 import { deviceDisplayLabel } from "./audio-devices";
+import {
+  DEFAULT_SHORTCUTS,
+  SHORTCUT_ACTIONS,
+  SHORTCUT_ACTION_LABELS,
+  comboFromEvent,
+  formatShortcut,
+  isModifierKey,
+  sameShortcut,
+  shortcutLabel,
+  shortcutLabelParts,
+  shortcutProblem,
+  type ShortcutAction,
+  type Shortcuts,
+} from "./shortcuts";
+import { MAC, shortcutStore } from "./shortcut-store";
 import { cn } from "@/lib/utils";
 
 type CredentialPreference = "auto" | "apiKey" | "subscription";
@@ -39,6 +55,7 @@ interface VoiceConfig {
   notifications: boolean;
   pluginCommands: string;
   credentialPreference: CredentialPreference;
+  shortcuts: Shortcuts;
 }
 
 /**
@@ -50,9 +67,15 @@ function useVoiceConfig() {
   const rpc = useRpc<typeof rpcContract>();
   const [config, setConfig] = useState<VoiceConfig | null>(null);
 
+  // Whatever the backend says is also pushed into the shortcut mirror, so the
+  // content-script listener and tooltips follow an edit made on this page.
+  const adopt = useCallback((next: VoiceConfig) => {
+    setConfig(next);
+    shortcutStore.set(next.shortcuts);
+  }, []);
   const refetch = useCallback(() => {
-    rpc.call("getConfig", null).then(setConfig, () => undefined);
-  }, [rpc]);
+    rpc.call("getConfig", null).then(adopt, () => undefined);
+  }, [rpc, adopt]);
   useEffect(refetch, [refetch]);
   useRealtime("config-changed", refetch);
 
@@ -60,7 +83,7 @@ function useVoiceConfig() {
     async (patch: Partial<VoiceConfig>) => {
       setConfig((prev) => (prev ? { ...prev, ...patch } : prev));
       try {
-        setConfig(await rpc.call("setConfig", patch));
+        adopt(await rpc.call("setConfig", patch));
         return true;
       } catch (cause) {
         refetch();
@@ -68,7 +91,7 @@ function useVoiceConfig() {
         return false;
       }
     },
-    [rpc, refetch],
+    [rpc, refetch, adopt],
   );
 
   return { config, update };
@@ -849,6 +872,148 @@ export function AudioSettings() {
           Switching speakers in the app isn't supported yet — change your output in your system sound settings.
         </p>
       </Group>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Keyboard shortcuts: one row per action showing the current binding as
+// keycaps, with a recorder that captures the next combination pressed.
+// ---------------------------------------------------------------------------
+
+/** The binding as keycaps, e.g. [⌘][Shift][H]; an ellipsis while recording. */
+function Keycaps({ value }: { value: string | null }) {
+  const parts = value === null ? ["…"] : shortcutLabelParts(value, MAC);
+  return (
+    <span className="flex items-center gap-1" aria-hidden={value === null}>
+      {parts.map((part, index) => (
+        <kbd
+          key={index}
+          className="inline-flex h-6 min-w-6 items-center justify-center rounded border border-border bg-muted px-1.5 font-sans text-[11px] font-medium text-foreground shadow-[inset_0_-1px_0_var(--border)]"
+        >
+          {part}
+        </kbd>
+      ))}
+    </span>
+  );
+}
+
+function ShortcutRow({
+  action,
+  shortcuts,
+  disabled,
+  onChange,
+}: {
+  action: ShortcutAction;
+  shortcuts: Shortcuts;
+  disabled: boolean;
+  onChange: (value: string) => void;
+}) {
+  const [recording, setRecording] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  // The recorder is installed once per recording session; read the latest
+  // bindings and callback through a ref so it never goes stale.
+  const latest = useRef({ shortcuts, onChange });
+  latest.current = { shortcuts, onChange };
+  const value = shortcuts[action];
+  const isDefault = sameShortcut(value, DEFAULT_SHORTCUTS[action]);
+
+  useEffect(() => {
+    if (!recording) return;
+    shortcutStore.setRecording(true);
+    const onKeyDown = (event: KeyboardEvent) => {
+      // Capture phase on window: ahead of bb's own bindings and our global
+      // listener, so the keystroke reaches only this recorder and nothing is
+      // typed into whatever has focus.
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      if (event.key === "Escape") {
+        setRecording(false);
+        return;
+      }
+      if (isModifierKey(event.key)) return; // waiting for the key itself
+      const combo = comboFromEvent(event, MAC);
+      if (!combo) {
+        setProblem(MAC ? "Use ⌘ rather than Control." : "Use Ctrl rather than the Windows or Command key.");
+        return;
+      }
+      const next = formatShortcut(combo);
+      const why = shortcutProblem(next, action, latest.current.shortcuts, MAC);
+      if (why) {
+        setProblem(why); // stay in recording mode so they can try again
+        return;
+      }
+      setRecording(false);
+      latest.current.onChange(next);
+    };
+    window.addEventListener("keydown", onKeyDown, { capture: true });
+    return () => {
+      window.removeEventListener("keydown", onKeyDown, { capture: true });
+      shortcutStore.setRecording(false);
+    };
+  }, [recording, action]);
+
+  const status = recording ? (
+    <span className={cn("block text-xs", problem ? "text-destructive" : "text-muted-foreground")}>
+      {problem ?? "Press the new combination, or Esc to keep the current one."}
+    </span>
+  ) : isDefault ? null : (
+    <button type="button" className={linkClass} disabled={disabled} onClick={() => onChange(DEFAULT_SHORTCUTS[action])}>
+      Reset to {shortcutLabel(DEFAULT_SHORTCUTS[action], MAC)}
+    </button>
+  );
+
+  return (
+    <div className="flex items-center justify-between gap-3 px-3 py-2">
+      <div className="min-w-0 space-y-0.5">
+        <span className="block text-sm text-foreground">{SHORTCUT_ACTION_LABELS[action]}</span>
+        {status}
+      </div>
+      <div className="flex shrink-0 items-center gap-2">
+        <Keycaps value={recording ? null : value} />
+        <Button
+          type="button"
+          variant={recording ? "secondary" : "outline"}
+          size="sm"
+          disabled={disabled}
+          onClick={() => {
+            setProblem(null);
+            setRecording((prev) => !prev);
+          }}
+        >
+          {recording ? "Cancel" : "Change"}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+export function ShortcutsSettings() {
+  const { config, update } = useVoiceConfig();
+  const shortcuts = config?.shortcuts ?? DEFAULT_SHORTCUTS;
+  const loading = config === null;
+
+  return (
+    <div className="space-y-3">
+      <p className="text-xs text-muted-foreground">
+        These work anywhere in bb, even while typing in the composer. Click Change, then press the new
+        combination. Bindings are shared across your devices; ⌘ here means Ctrl on Windows and Linux.
+      </p>
+      <div className="divide-y divide-border/50 rounded-md border border-border">
+        {SHORTCUT_ACTIONS.map((action) => (
+          <ShortcutRow
+            key={action}
+            action={action}
+            shortcuts={shortcuts}
+            disabled={loading}
+            onChange={(value) => {
+              void update({ shortcuts: { ...shortcuts, [action]: value } }).then((ok) => {
+                if (ok) toast.success(`Shortcut saved: ${shortcutLabel(value, MAC)}`);
+              });
+            }}
+          />
+        ))}
+      </div>
     </div>
   );
 }

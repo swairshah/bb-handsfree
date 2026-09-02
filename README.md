@@ -34,7 +34,9 @@ The button has three states:
 
 Keyboard: **Cmd+Shift+H** (Ctrl+Shift+H on Windows/Linux) starts or stops a
 call from anywhere in bb; **Cmd+Shift+U** mutes/unmutes during a call. Both are
-also in the quick palette (Cmd+Shift+P) under Handsfree.
+also in the quick palette (Cmd+Shift+P) under Handsfree. To rebind them, open
+Settings → Plugins → Handsfree → **Keyboard shortcuts**, click **Change**, and
+press the new combination.
 
 ## Things you can say
 
@@ -89,6 +91,11 @@ Open the Handsfree plugin settings for curated sections:
   session; if it disconnects, Handsfree falls back to the system default.
   Playback always uses your system-default speaker (change it in your OS Sound
   settings).
+- **Keyboard shortcuts** — rebind the start/stop and mute keys: click
+  **Change** and press the new combination (Esc keeps the current one). A
+  binding needs ⌘/Ctrl or Alt, or a function key, so it can't fire while you
+  type, and bb's own Cmd+Shift+P / Cmd+Shift+M are refused. Bindings are
+  shared across your devices.
 
 The only credential is the **OpenAI API key**, a secret stored in bb's plugin
 secret store (0600 file, never in the db or frontend). It's optional: leave it

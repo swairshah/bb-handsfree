@@ -19,17 +19,13 @@ import type { PluginThreadListProps } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "./server";
 import { voiceAgent } from "./voice-agent";
 import { SessionsPanel } from "./sessions-panel";
-import { AudioSettings, BehaviorSettings, ModelsSettings } from "./settings-sections";
+import { AudioSettings, BehaviorSettings, ModelsSettings, ShortcutsSettings } from "./settings-sections";
 import { cn } from "@/lib/utils";
 import { AUDIO_DEVICE_STORAGE_KEY } from "./audio-devices";
 import { MicIcon, StopIcon, WaveformIcon, useCallElapsed } from "./voice-chrome";
-import { clientDescriptor } from "./client-identity";
-import { isMacPlatform, matchShortcut, shortcutLabel } from "./shortcuts";
+import { matchShortcut, shortcutLabel } from "./shortcuts";
+import { MAC, SHORTCUT_STORAGE_KEY, shortcutStore, useShortcutSync, useShortcuts } from "./shortcut-store";
 import "./app.css";
-
-const MAC = isMacPlatform(clientDescriptor.platform);
-const TOGGLE_HINT = shortcutLabel("toggle", MAC);
-const MUTE_HINT = shortcutLabel("mute", MAC);
 
 function AideVoiceButton() {
   const rpc = useRpc<typeof rpcContract>();
@@ -47,6 +43,12 @@ function AideVoiceButton() {
   const state = useSyncExternalStore(voiceAgent.subscribe, voiceAgent.getState);
   const activity = useSyncExternalStore(voiceAgent.subscribe, voiceAgent.getActivity);
   const micSuspended = useSyncExternalStore(voiceAgent.subscribe, voiceAgent.getMicSuspended);
+  // Shortcut hints for the tooltips. This button is mounted on nearly every
+  // page, so it also keeps the content-script mirror in step with the config.
+  useShortcutSync();
+  const shortcuts = useShortcuts();
+  const toggleHint = shortcutLabel(shortcuts.toggle, MAC);
+  const muteHint = shortcutLabel(shortcuts.mute, MAC);
 
   // Global exclusivity: when any window starts a call, all others stop theirs.
   useRealtime("voice-call", (payload) => {
@@ -137,7 +139,7 @@ function AideVoiceButton() {
         <button
           type="button"
           aria-label={muted ? "Unmute Aide microphone" : "Mute Aide microphone"}
-          title={`${muted ? "Unmute" : "Mute"} (${MUTE_HINT})`}
+          title={`${muted ? "Unmute" : "Mute"} (${muteHint})`}
           onPointerDown={(event) => event.button === 0 && event.preventDefault()}
           onClick={() => voiceAgent.toggleMuteFromSurface()}
           className={cn(
@@ -172,7 +174,7 @@ function AideVoiceButton() {
         <button
           type="button"
           aria-label="Stop Aide voice session"
-          title={`Stop (${TOGGLE_HINT})`}
+          title={`Stop (${toggleHint})`}
           onPointerDown={(event) => event.button === 0 && event.preventDefault()}
           onClick={() => voiceAgent.stopFromSurface()}
           className="flex size-7 items-center justify-center text-muted-foreground transition-colors hover:bg-destructive/15 hover:text-destructive"
@@ -187,7 +189,7 @@ function AideVoiceButton() {
     <button
       type="button"
       aria-label="Start Aide voice agent"
-      title={`Talk to Aide (${TOGGLE_HINT})`}
+      title={`Talk to Aide (${toggleHint})`}
       onPointerDown={(event) => event.button === 0 && event.preventDefault()}
       onClick={() => voiceAgent.toggleFromSurface()}
       className={cn(
@@ -214,6 +216,9 @@ function SidebarVoiceBar() {
   const live = state === "live";
   const muted = state === "muted";
   const active = live || muted;
+  const shortcuts = useShortcuts();
+  const toggleHint = shortcutLabel(shortcuts.toggle, MAC);
+  const muteHint = shortcutLabel(shortcuts.mute, MAC);
   const speaking = activity === "aide";
   const listening = activity === "you";
   // Same neutral-chrome + activity-color scheme as the composer pill: color
@@ -240,7 +245,7 @@ function SidebarVoiceBar() {
       <button
         type="button"
         aria-label={active ? "Stop Aide voice agent" : "Start Aide voice agent"}
-        title={`${active ? "Stop Aide" : "Talk to Aide"} (${TOGGLE_HINT})`}
+        title={`${active ? "Stop Aide" : "Talk to Aide"} (${toggleHint})`}
         onClick={() => voiceAgent.toggleFromSurface()}
         className={cn(
           "flex h-7 flex-1 items-center justify-center gap-1.5 rounded-md border border-border px-2 text-xs font-medium transition-colors",
@@ -259,7 +264,7 @@ function SidebarVoiceBar() {
         <button
           type="button"
           aria-label={muted ? "Unmute Aide microphone" : "Mute Aide microphone"}
-          title={`${muted ? "Unmute" : "Mute"} (${MUTE_HINT})`}
+          title={`${muted ? "Unmute" : "Mute"} (${muteHint})`}
           onClick={() => voiceAgent.toggleMuteFromSurface()}
           className={cn(
             "flex size-7 shrink-0 items-center justify-center rounded-md border border-border transition-colors",
@@ -339,6 +344,11 @@ export default definePluginApp((app) => {
     title: "Audio",
     component: AudioSettings,
   });
+  app.slots.settingsSection({
+    id: "shortcuts",
+    title: "Keyboard shortcuts",
+    component: ShortcutsSettings,
+  });
   app.composer.customize({
     id: "aide-voice",
     actions: [{ id: "voice-agent", component: AideVoiceButton }],
@@ -360,12 +370,12 @@ export default definePluginApp((app) => {
   // activates it), but users can pin BB's list under Settings → Appearance.
   app.slots.commandPaletteAction({
     id: "toggle-voice",
-    title: `Handsfree: start/stop voice (${TOGGLE_HINT})`,
+    title: "Handsfree: start/stop voice",
     run: () => voiceAgent.toggleFromSurface(),
   });
   app.slots.commandPaletteAction({
     id: "toggle-mute",
-    title: `Handsfree: mute/unmute (${MUTE_HINT})`,
+    title: "Handsfree: mute/unmute",
     isAvailable: () => voiceAgent.getState() === "live" || voiceAgent.getState() === "muted",
     run: () => voiceAgent.toggleMuteFromSurface(),
   });
@@ -383,17 +393,23 @@ export default definePluginApp((app) => {
     mount({ signal }) {
       window.addEventListener("storage", (event) => {
         if (event.key === AUDIO_DEVICE_STORAGE_KEY) voiceAgent.refreshAudioPreferences();
+        if (event.key === SHORTCUT_STORAGE_KEY) shortcutStore.refresh();
       }, { signal });
-      // Release the mic synchronously before the page tears down. Without this,
-      // a hard reload (Cmd+R) leaves the previous page holding the input device,
-      // so the fresh page enumerates zero microphones until the OS reclaims it.
+      // Keyboard shortcuts (rebindable under Settings → Keyboard shortcuts).
+      // Bindings come from the mirror in shortcut-store.ts, so an edit applies
+      // without a reload; while the settings page is recording a new combo the
+      // listener stands down so the old binding can't fire mid-capture.
       window.addEventListener("keydown", (event) => {
-        const action = matchShortcut(event, MAC);
+        if (shortcutStore.isRecording()) return;
+        const action = matchShortcut(event, MAC, shortcutStore.get());
         if (!action) return;
         event.preventDefault();
         if (action === "toggle") voiceAgent.toggleFromSurface();
         else voiceAgent.toggleMuteFromSurface();
       }, { signal });
+      // Release the mic synchronously before the page tears down. Without this,
+      // a hard reload (Cmd+R) leaves the previous page holding the input device,
+      // so the fresh page enumerates zero microphones until the OS reclaims it.
       window.addEventListener("pagehide", () => voiceAgent.stop(), { signal });
       signal.addEventListener("abort", () => voiceAgent.stop());
       return () => voiceAgent.stop();

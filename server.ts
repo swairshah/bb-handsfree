@@ -19,6 +19,19 @@ import {
   type RealtimeModel,
   type Voice,
 } from "./models";
+import { DEFAULT_SHORTCUTS, isValidShortcut, normalizeShortcuts, type Shortcuts } from "./shortcuts";
+
+/**
+ * Rebindable keyboard shortcuts (see shortcuts.ts): each value is a
+ * "Mod+Shift+H"-style string that includes Mod or Alt, or is a function key,
+ * so it can't fire while the user is merely typing.
+ */
+const shortcutsSchema = z
+  .object({
+    toggle: z.string().max(60).refine(isValidShortcut, "not a usable key combination"),
+    mute: z.string().max(60).refine(isValidShortcut, "not a usable key combination"),
+  })
+  .strict();
 
 export const rpcContract = defineRpcContract({
   /** Exchange a WebRTC SDP offer with OpenAI Realtime. Returns the answer. */
@@ -109,6 +122,7 @@ export const rpcContract = defineRpcContract({
         notifications: z.boolean(),
         pluginCommands: z.string(),
         credentialPreference: z.enum(["auto", "apiKey", "subscription"]),
+        shortcuts: shortcutsSchema,
       })
       .strict(),
   },
@@ -121,6 +135,7 @@ export const rpcContract = defineRpcContract({
         notifications: z.boolean().optional(),
         pluginCommands: z.string().max(2000).optional(),
         credentialPreference: z.enum(["auto", "apiKey", "subscription"]).optional(),
+        shortcuts: shortcutsSchema.optional(),
       })
       .strict(),
     output: z
@@ -130,6 +145,7 @@ export const rpcContract = defineRpcContract({
         notifications: z.boolean(),
         pluginCommands: z.string(),
         credentialPreference: z.enum(["auto", "apiKey", "subscription"]),
+        shortcuts: shortcutsSchema,
       })
       .strict(),
   },
@@ -469,6 +485,7 @@ export default async function plugin(bb: BbPluginApi) {
     notifications: boolean;
     pluginCommands: string;
     credentialPreference: CredentialPreference;
+    shortcuts: Shortcuts;
   }
   const CONFIG_KEY = "config";
   const CONFIG_DEFAULTS: VoiceConfig = {
@@ -477,6 +494,7 @@ export default async function plugin(bb: BbPluginApi) {
     notifications: true,
     pluginCommands: "all",
     credentialPreference: "auto",
+    shortcuts: { ...DEFAULT_SHORTCUTS },
   };
   async function readConfig(): Promise<VoiceConfig> {
     const stored = (await bb.storage.kv.get<Partial<VoiceConfig>>(CONFIG_KEY)) ?? {};
@@ -490,9 +508,12 @@ export default async function plugin(bb: BbPluginApi) {
       credentialPreference: isCredentialPreference(stored.credentialPreference)
         ? stored.credentialPreference
         : CONFIG_DEFAULTS.credentialPreference,
+      shortcuts: normalizeShortcuts(stored.shortcuts),
     };
   }
   async function writeConfig(patch: Partial<VoiceConfig>): Promise<VoiceConfig> {
+    // Store the canonical spelling so equality checks downstream are simple.
+    if (patch.shortcuts) patch = { ...patch, shortcuts: normalizeShortcuts(patch.shortcuts) };
     const next = { ...(await readConfig()), ...patch };
     await bb.storage.kv.set(CONFIG_KEY, next);
     return next;
