@@ -906,6 +906,14 @@ export function SessionsPanel() {
                         {fmtDate(session.startedAt)} · {duration(session.startedAt, session.lastEventAt)}
                       </span>
                     </span>
+                    {session.costUsd > 0 ? (
+                      <span
+                        title="Estimated API cost for this session"
+                        className="shrink-0 text-xs tabular-nums text-muted-foreground"
+                      >
+                        {`~$${session.costUsd.toFixed(4)}`}
+                      </span>
+                    ) : null}
                     {session.device ? (
                       <span title={session.device.label} className="flex shrink-0 items-center">
                         <DeviceIcon mobile={session.device.mobile} className="size-4 text-muted-foreground/50" />
