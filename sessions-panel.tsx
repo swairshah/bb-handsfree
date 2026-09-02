@@ -668,37 +668,6 @@ export function SessionsPanel() {
   }, [appPanel]);
   useRealtime("voice-companion", (payload) => voiceAgent.applyCompanion(payload));
 
-  // Terminal sessions are created by the backend tool, then revealed here in
-  // bb's native Terminal tab. `openTerminal` is the small companion-mode SDK
-  // seam currently being prototyped in the local bb dev app; feature-detect it
-  // so the plugin still loads on an older host and the tool can report its id.
-  useRealtime("voice-terminal", (payload) => {
-    const value = payload as {
-      terminalId?: unknown;
-      target?: unknown;
-    } | null;
-    if (typeof value?.terminalId !== "string" || !value.target) return;
-    const panel = appPanel as typeof appPanel & {
-      openTerminal?: (options: {
-        surface: { kind: "current" };
-        terminalId: string;
-        target:
-          | { kind: "thread"; threadId: string }
-          | { kind: "environment"; environmentId: string }
-          | { kind: "host_path"; hostId: string; cwd: string | null };
-      }) => boolean;
-    };
-    const target = value.target as
-      | { kind: "thread"; threadId: string }
-      | { kind: "environment"; environmentId: string }
-      | { kind: "host_path"; hostId: string; cwd: string | null };
-    panel.openTerminal?.({
-      surface: { kind: "current" },
-      terminalId: value.terminalId,
-      target,
-    });
-  });
-
   // Open URLs in the bb browser (works from any surface; harmless duplicate set).
   const navigate = useBbNavigate();
   useEffect(() => {

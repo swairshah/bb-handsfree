@@ -393,7 +393,6 @@ function toolSchemas(pluginCommands: PluginCommandInfo[] = []) {
     { type: "function", name: "archive_thread", description: "Archive a thread (and its children).", parameters: { type: "object", properties: { thread_id: { type: "string" } }, required: ["thread_id"] } },
     { type: "function", name: "rename_thread", description: "Rename a thread.", parameters: { type: "object", properties: { thread_id: { type: "string" }, title: { type: "string" } }, required: ["thread_id", "title"] } },
     { type: "function", name: "show_diff", description: "Summarize a thread's workspace diff (changed files, additions/deletions) and focus the thread so the user can see it.", parameters: { type: "object", properties: { thread_id: { type: "string" } }, required: ["thread_id"] } },
-    { type: "function", name: "open_terminal", description: "Open a real bb terminal in the companion panel, optionally starting a command the user explicitly requested. Scope it to a thread when possible; otherwise pass a machine id from list_machines. Never invent a shell command or use this for destructive/elevated work without the user's explicit confirmation.", parameters: { type: "object", properties: { thread_id: { type: "string", description: "Thread whose workspace the terminal should use. Defaults to the current thread when one is in view." }, machine_id: { type: "string", description: "Machine id for a home-directory terminal when there is no thread. Use list_machines first." }, command: { type: "string", description: "Optional shell command the user explicitly asked to run. Omit for an interactive shell." }, title: { type: "string", description: "Optional short terminal tab title." } } } },
     { type: "function", name: "update_instructions", description: "Amend your own standing instructions (the system prompt for future voice sessions). Pass the COMPLETE new instructions text, not a diff. Use only when the user asks for a lasting behavior change.", parameters: { type: "object", properties: { instructions: { type: "string", description: "The full replacement instructions." }, reason: { type: "string", description: "One short sentence: why, quoting the user's request." } }, required: ["instructions", "reason"] } },
     // Handled locally in the bb app frontend, never reaches runTool:
     { type: "function", name: "set_composer_text", description: "Replace the text in the user's message composer (the box they type prompts into).", parameters: { type: "object", properties: { text: { type: "string" } }, required: ["text"] } },
@@ -405,13 +404,12 @@ function toolSchemas(pluginCommands: PluginCommandInfo[] = []) {
 
 const DEFAULT_PROMPT = `You are Aide, a concise voice operator for bb — the user's agentic IDE where coding agents run in threads inside projects.
 
-The user talks to you to drive bb hands-free. You can list/search/read threads, focus them on screen, spotlight or maximize panes, send messages to agent threads, start new threads, stop or archive threads, summarize diffs, open browser pages, open terminals, and edit the user's prompt composer.
+The user talks to you to drive bb hands-free. You can list/search/read threads, focus them on screen, spotlight or maximize panes, send messages to agent threads, start new threads, stop or archive threads, summarize diffs, open browser pages, and edit the user's prompt composer.
 
 Rules:
 - Be extremely succinct. One short sentence by default ("Done.", "Focused.", "Sent."). Never narrate what you're about to do, never enumerate options, never restate the user's request. Add detail only when asked.
 - Thread ids look like thr_x… and project ids like proj_x…. When the user names a thread by topic or title, find it with list_threads or search_threads first.
 - Never invent prompts, titles, or messages on the user's behalf. If required information is missing, ask one short question.
-- Never invent a shell command. Run only the command the user explicitly requested; ask for explicit confirmation before destructive or elevated commands.
 - When reading agent output aloud, give a one-or-two-sentence summary; never read code or ids verbatim.
 - Prefer focus_thread so the user sees what you are talking about.
 - Threads run on a machine. start_thread uses the project's default machine unless you pass machine_id — when the project is on several connected machines and the user didn't name one, use list_machines and ask one short question (e.g. "On your MacBook or the studio?") before starting.
@@ -1018,61 +1016,6 @@ export default async function plugin(bb: BbPluginApi) {
         if (diff.outcome !== "available") return `Diff not available (${diff.outcome}).`;
         const files = diff.files.map((f) => ({ path: f.path, additions: f.additions, deletions: f.deletions }));
         return JSON.stringify({ shortstat: diff.shortstat, files: files.slice(0, 50) });
-      }
-      case "open_terminal": {
-        const threadId =
-          typeof args.thread_id === "string" && args.thread_id
-            ? args.thread_id
-            : context.threadId;
-        const machineId =
-          typeof args.machine_id === "string" && args.machine_id
-            ? args.machine_id
-            : null;
-        if (!threadId && !machineId) {
-          return "No thread or machine is selected. Find a thread, or call list_machines and ask which machine to use.";
-        }
-        const scope = threadId
-          ? ({ kind: "thread", threadId } as const)
-          : ({ kind: "host_path", hostId: machineId!, cwd: null } as const);
-        const command =
-          typeof args.command === "string" && args.command.trim()
-            ? args.command.trim()
-            : null;
-        const title =
-          typeof args.title === "string" && args.title.trim()
-            ? args.title.trim().slice(0, 120)
-            : command
-              ? command.slice(0, 80)
-              : "Terminal";
-        const terminal = await bb.sdk.terminals.create({
-          cols: 100,
-          rows: 30,
-          scope,
-          title,
-          // Keep a shell behind one-shot commands so their output remains in a
-          // visible companion tab instead of the PTY exiting (and bb removing
-          // the tab) immediately after `pwd`, `git status`, etc. finish.
-          start: { mode: "shell" },
-        });
-        if (command) {
-          await bb.sdk.terminals.input({
-            terminalId: terminal.id,
-            dataBase64: Buffer.from(`${command}\n`, "utf8").toString("base64"),
-          });
-        }
-        // The terminal itself is durable server state. This signal is only the
-        // client-local reveal intent: whichever Handsfree page is mounted asks
-        // bb to add the existing session to its native companion tab strip.
-        bb.realtime.publish("voice-terminal", {
-          terminalId: terminal.id,
-          target: scope,
-        });
-        return JSON.stringify({
-          terminalId: terminal.id,
-          title: terminal.title,
-          status: terminal.status,
-          commandStarted: command !== null,
-        });
       }
       default:
         return `Unknown tool: ${name}`;
