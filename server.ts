@@ -1131,6 +1131,15 @@ export default async function plugin(bb: BbPluginApi) {
           input: {
             noise_reduction: { type: "near_field" },
             transcription: { model: "gpt-realtime-whisper" },
+            // Default server VAD (threshold 0.5) fires on background noise and
+            // makes Aide respond to phantom turns. Require a stronger signal and
+            // a longer pause before treating audio as an utterance.
+            turn_detection: {
+              type: "server_vad",
+              threshold: 0.75,
+              prefix_padding_ms: 300,
+              silence_duration_ms: 700,
+            },
           },
           output: { voice },
         },
