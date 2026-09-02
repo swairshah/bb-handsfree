@@ -12,8 +12,8 @@ test("Cmd+Shift+H toggles on mac, Ctrl+Shift+H elsewhere", () => {
   assert.equal(matchShortcut({ ...base, key: "h", metaKey: true, shiftKey: true }, false), null);
 });
 
-test("Mod+Shift+M mutes; plain/alt/repeat/composing keys are ignored", () => {
-  assert.equal(matchShortcut({ ...base, key: "m", metaKey: true, shiftKey: true }, true), "mute");
+test("Mod+Shift+U mutes; plain/alt/repeat/composing keys are ignored", () => {
+  assert.equal(matchShortcut({ ...base, key: "u", metaKey: true, shiftKey: true }, true), "mute");
   assert.equal(matchShortcut({ ...base, key: "h", shiftKey: true }, true), null);
   assert.equal(matchShortcut({ ...base, key: "h", metaKey: true }, true), null);
   assert.equal(matchShortcut({ ...base, key: "h", metaKey: true, shiftKey: true, altKey: true }, true), null);
@@ -28,5 +28,5 @@ test("platform detection and labels", () => {
   assert.equal(isMacPlatform("Windows"), false);
   assert.equal(isMacPlatform(""), false);
   assert.equal(shortcutLabel("toggle", true), "⌘+Shift+H");
-  assert.equal(shortcutLabel("mute", false), "Ctrl+Shift+M");
+  assert.equal(shortcutLabel("mute", false), "Ctrl+Shift+U");
 });

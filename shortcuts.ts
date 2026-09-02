@@ -6,7 +6,7 @@ export type ShortcutAction = "toggle" | "mute";
 
 export const SHORTCUTS: Record<ShortcutAction, { key: string; label: string }> = {
   toggle: { key: "h", label: "Mod+Shift+H" },
-  mute: { key: "m", label: "Mod+Shift+M" },
+  mute: { key: "u", label: "Mod+Shift+U" },
 };
 
 export interface ShortcutKeyEvent {
