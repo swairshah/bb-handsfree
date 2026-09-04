@@ -4,7 +4,8 @@
   "type": "module",
   "scripts": {
     "test": "node --test audio-devices.test.ts voice-agent.test.ts shortcuts.test.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:voice-preview": "bun test voice-preview.test.tsx"
   },
   "engines": {
     "bb": ">=0.40",
@@ -51,6 +52,7 @@
     "clsx": "^2.1.1",
     "sonner": "^1.7.4",
     "tailwind-merge": "^3.4.0",
-    "vaul": "^1.1.2"
+    "vaul": "^1.1.2",
+    "happy-dom": "^20.14.0"
   }
 }
