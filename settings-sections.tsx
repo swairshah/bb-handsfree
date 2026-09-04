@@ -53,7 +53,7 @@ interface VoiceConfig {
   model: RealtimeModel;
   voice: Voice;
   notifications: boolean;
-  viewBehavior: "auto" | "reuse" | "new";
+  mobileViewBehavior: "reuse" | "new";
   pluginCommands: string;
   credentialPreference: CredentialPreference;
   shortcuts: Shortcuts;
@@ -328,13 +328,12 @@ export function BehaviorSettings() {
     <div className="space-y-5">
       <PromptEditor />
 
-      <Group label="Thread tabs" hint="Choose what happens when you ask Aide to show a thread. Requests for several threads always keep them all open.">
-        <label htmlFor="handsfree-view-behavior" className="mb-2 block text-sm">When opening a thread</label>
-        <select id="handsfree-view-behavior" className={selectClass} disabled={loading} value={config?.viewBehavior ?? "auto"}
-          onChange={event => void update({ viewBehavior: event.target.value as VoiceConfig["viewBehavior"] })}>
-          <option value="auto">Automatic — reuse on mobile, keep tabs on desktop</option>
-          <option value="reuse">Replace the current tab</option>
-          <option value="new">Keep threads in separate tabs</option>
+      <Group label="Mobile thread drawer" hint="On mobile, show threads without leaving the call. Desktop still navigates directly to threads.">
+        <label htmlFor="handsfree-view-behavior" className="mb-2 block text-sm">When showing a thread on mobile</label>
+        <select id="handsfree-view-behavior" className={selectClass} disabled={loading} value={config?.mobileViewBehavior ?? "reuse"}
+          onChange={event => void update({ mobileViewBehavior: event.target.value as VoiceConfig["mobileViewBehavior"] })}>
+          <option value="reuse">Replace the shown thread</option>
+          <option value="new">Keep threads in the drawer switcher</option>
         </select>
       </Group>
 

@@ -14,18 +14,18 @@ const { CompanionTab } = await import("./companion.tsx");
 after(() => dom.window.close());
 const view = (id: string): ThreadView => ({ kind: "thread", id: `thread:${id}`, threadId: id, projectId: "project", title: `Thread ${id}` });
 
-test("desktop buttons and the mobile switcher share selection; closing only removes the requested view", () => {
+test("the mobile switcher changes the shown thread; closing only removes the requested view", () => {
   viewWorkspace.clear();
   const unregister = viewWorkspace.registerPresenter({ available: () => true, reveal: () => true });
   const slot = renderSlot({ component: CompanionTab }, {});
   try {
     assert.match(slot.container.textContent ?? "", /all your running threads/);
-    act(() => viewWorkspace.open([view("a"), view("b")], "new", "auto", true));
+    act(() => viewWorkspace.open([view("a"), view("b")], "new", "reuse"));
     assert.equal(slot.getAllByTestId("bb-thread-chat").length, 1);
     assert.equal(slot.getByRole("combobox", { name: "Shown thread" }).getAttribute("aria-label"), "Shown thread");
     fireEvent.change(slot.getByRole("combobox"), { target: { value: "thread:b" } });
     assert.equal(viewWorkspace.get().activeId, "thread:b");
-    fireEvent.click(slot.getByRole("button", { name: "Thread a" }));
+    fireEvent.change(slot.getByRole("combobox"), { target: { value: "thread:a" } });
     assert.equal(viewWorkspace.get().activeId, "thread:a");
     const chat = slot.getByTestId("bb-thread-chat");
     assert.equal(chat.getAttribute("data-thread-id"), "a");
@@ -41,7 +41,7 @@ test("desktop buttons and the mobile switcher share selection; closing only remo
 test("closing and remounting a host panel preserves the collection for the app session", () => {
   viewWorkspace.clear();
   const unregister = viewWorkspace.registerPresenter({ available: () => true, reveal: () => true });
-  viewWorkspace.open([view("a"), view("b")], "new", "auto", true);
+  viewWorkspace.open([view("a"), view("b")], "new", "reuse");
   const first = renderSlot({ component: CompanionTab }, {});
   first.lifecycle.unmount();
   assert.equal(viewWorkspace.current(), null);

@@ -960,7 +960,7 @@ export class VoiceAgent {
     let status: "success" | "error" | undefined;
     let presentation: string | undefined;
     let label: string | undefined;
-    const shown = this.workspace.current();
+    const shown = clientDescriptor.mobile ? this.workspace.current() : null;
     const context = shown
       ? { threadId: shown.threadId, projectId: shown.projectId, onNewThreadScreen: false }
       : bindings?.context;
@@ -995,7 +995,12 @@ export class VoiceAgent {
         bindings.openNewThread(projectId);
         output =
           "Opened the New thread screen with the project preselected. The user will type the prompt themselves; no thread exists yet.";
-      } else if (name === "focus_thread" || name === "focus_threads") {
+      } else if (!clientDescriptor.mobile && ["focus_threads", "manage_views", "set_view_behavior"].includes(name)) {
+        throw new Error("Drawer tools are mobile-only. On desktop, use focus_thread to navigate to a thread.");
+      } else if (
+        clientDescriptor.mobile && (this.state === "live" || this.state === "muted") &&
+        (name === "focus_thread" || name === "focus_threads")
+      ) {
         const ids = name === "focus_thread" ? [args.thread_id] : args.thread_ids;
         if (!Array.isArray(ids) || !ids.length || ids.length > 100 || ids.some(id => typeof id !== "string" || !id.trim())) {
           throw new Error("Provide between 1 and 100 valid thread IDs.");
@@ -1004,7 +1009,7 @@ export class VoiceAgent {
         if (disposition !== "auto" && disposition !== "reuse" && disposition !== "new") throw new Error("Invalid tab disposition.");
         const { views, preference } = await bindings.rpc.call("resolveThreadViews", { threadIds: ids as string[] });
         if (dc.readyState !== "open" || this.nonce !== toolSessionId) throw new Error("The call ended before the threads could be shown.");
-        this.workspace.open(views, disposition as OpenDisposition, preference, clientDescriptor.mobile);
+        this.workspace.open(views, disposition as OpenDisposition, preference);
         output = views.length === 1 ? `Showing ${views[0].title}.` : `Showing ${views.length} threads. ${views[0].title} is selected.`;
         label = views.length === 1 ? `Showed ${views[0].title}` : `Showed ${views.length} threads`;
         status = "success";
@@ -1021,7 +1026,7 @@ export class VoiceAgent {
         } else if (!view) {
           throw new Error("That view is not open. List the open views first.");
         } else if (args.action === "select") {
-          this.workspace.open([view], "new", "new", clientDescriptor.mobile);
+          this.workspace.open([view], "new", "new");
           output = `Showing ${view.title}.`;
         } else if (args.action === "close") {
           this.workspace.close(id);
@@ -1047,6 +1052,10 @@ export class VoiceAgent {
         });
         output = result.output;
         status = result.status;
+        if (name === "focus_thread") {
+          presentation = "navigation";
+          if (status === "success") label = "Focused a thread";
+        }
       }
     } catch (error) {
       status = "error";
@@ -1274,6 +1283,7 @@ export class VoiceAgent {
       const { sdp } = await bindings.rpc.call("createCall", {
         sdp: localSdp,
         nonce,
+        mobile: clientDescriptor.mobile,
         ...bindings.context,
       });
       if (this.session?.pc !== pc) return; // stopped while exchanging

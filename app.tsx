@@ -18,6 +18,7 @@ import {
 } from "@get-bb/plugin-sdk/app";
 import type { PluginThreadListProps } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "./server";
+import { clientDescriptor } from "./client-identity";
 import { voiceAgent } from "./voice-agent";
 import { SessionsPanel } from "./sessions-panel";
 import { viewWorkspace } from "./view-workspace";
@@ -48,7 +49,7 @@ function AideVoiceButton() {
   const navigate = useBbNavigate();
   const surface = useRef<HTMLElement | null>(null);
   useEffect(() => {
-    if (scope.kind !== "thread" || scope.threadId !== threadId) return;
+    if (!clientDescriptor.mobile || scope.kind !== "thread" || scope.threadId !== threadId) return;
     return viewWorkspace.registerPresenter({
       available: () => document.visibilityState !== "hidden" && !!surface.current &&
         !surface.current.closest("[data-handsfree-workspace]"),
@@ -369,9 +370,9 @@ export default definePluginApp((app) => {
     id: "aide-voice",
     actions: [{ id: "voice-agent", component: AideVoiceButton }],
   });
-  app.slots.threadPanelAction({
+  if (clientDescriptor.mobile) app.slots.threadPanelAction({
     id: THREAD_WORKSPACE_ACTION,
-    title: "Handsfree views",
+    title: "Handsfree mobile views",
     icon: "PanelRight",
     layout: "flush",
     component: CompanionTab,
@@ -384,9 +385,9 @@ export default definePluginApp((app) => {
     path: "sessions",
     component: SessionsPanel,
     experimental_sidebarAccessory: SidebarLiveIndicator,
-    // A single host panel contains the local collection. bb supplies its
-    // desktop panel/mobile drawer; Handsfree supplies view selection and tabs.
-    fixedTabs: [
+    // Registration is collected in each client: desktop keeps its original
+    // panel chrome, while mobile gains a call-safe drawer view.
+    fixedTabs: clientDescriptor.mobile ? [
       {
         ...COMPANION_TAB,
         title: "Views",
@@ -394,7 +395,7 @@ export default definePluginApp((app) => {
         component: CompanionTab,
         layout: "flush",
       },
-    ],
+    ] : [],
   });
   // --- Global surface trial: multiple always-reachable triggers for the same
   // singleton call. All are pure toggles; the composer button owns the binding.

@@ -13,6 +13,7 @@ import {
   useRpc,
 } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "./server";
+import { clientDescriptor } from "./client-identity";
 import { voiceAgent } from "./voice-agent";
 import { MicIcon, StopIcon, WaveformIcon, useCallElapsed } from "./voice-chrome";
 import { viewWorkspace } from "./view-workspace";
@@ -655,7 +656,7 @@ export function SessionsPanel() {
   }, [rpc, threadId, projectId, sidebarActions]);
 
   useEffect(() => viewWorkspace.registerPresenter({
-    available: () => document.visibilityState !== "hidden",
+    available: () => clientDescriptor.mobile && document.visibilityState !== "hidden",
     reveal: () => appPanel.openFixedTab({ surface: { kind: "current" }, tab: COMPANION_TAB }),
   }), [appPanel]);
   const [sessions, setSessions] = useState<SessionRow[] | null>(null);

@@ -5,7 +5,8 @@ import { ViewWorkspace } from "./view-workspace.ts";
 import { clientDescriptor } from "./client-identity.ts";
 
 type Call = { method: string; args: any };
-function fixture() {
+function fixture(mobile = true) {
+  clientDescriptor.mobile = mobile;
   const workspace = new ViewWorkspace();
   const agent = new VoiceAgent(workspace);
   const internal = agent as unknown as {
@@ -21,7 +22,7 @@ function fixture() {
     calls.push({ method, args });
     if (method === "resolveThreadViews") return {
       views: [...new Set(args.threadIds as string[])].map(threadId => ({ kind: "thread", id: `thread:${threadId}`, threadId, projectId: `project-${threadId}`, title: `Title ${threadId}` })),
-      preference: "auto",
+      preference: "reuse",
     };
     if (method === "runTool") return { output: JSON.stringify(args), status: "success" };
     return { ok: true };
@@ -39,24 +40,42 @@ function fixture() {
   return { workspace, agent, internal, calls, sent, dc, base, execute };
 }
 
-test("mobile and desktop openings use local panels, preserving correlated tool events", async () => {
-  const oldMobile = clientDescriptor.mobile;
-  try {
-    for (const mobile of [true, false]) {
-      clientDescriptor.mobile = mobile;
-      const f = fixture();
-      f.workspace.registerPresenter({ available: () => true, reveal: () => true });
-      const result = await f.execute("focus_thread", { thread_id: "a" });
-      assert.equal(result.status, "success");
-      assert.equal(result.label, "Showed Title a");
-      assert.equal(result.presentation, "panel");
-      const events = f.calls.filter(call => call.method === "logEvent" && call.args.sessionId === "call-session");
-      assert.deepEqual(events.map(event => event.args.kind), ["tool.call", "tool.result"]);
-      assert.equal(events[0].args.payload.callId, result.callId);
-      assert.deepEqual(events[0].args.payload._id, result._id);
-      assert.equal(f.calls.some(call => call.method === "runTool" || call.method === "sendCompanion"), false);
-    }
-  } finally { clientDescriptor.mobile = oldMobile; }
+test("mobile openings use local drawers with correlated tool events", async () => {
+  const f = fixture();
+  f.workspace.registerPresenter({ available: () => true, reveal: () => true });
+  const result = await f.execute("focus_thread", { thread_id: "a" });
+  assert.equal(result.status, "success");
+  assert.equal(result.label, "Showed Title a");
+  assert.equal(result.presentation, "panel");
+  const events = f.calls.filter(call => call.method === "logEvent" && call.args.sessionId === "call-session");
+  assert.deepEqual(events.map(event => event.args.kind), ["tool.call", "tool.result"]);
+  assert.equal(events[0].args.payload.callId, result.callId);
+  assert.deepEqual(events[0].args.payload._id, result._id);
+  assert.equal(f.calls.some(call => call.method === "runTool" || call.method === "sendCompanion"), false);
+});
+
+test("desktop focus_thread retains server navigation even if a local presenter exists", async () => {
+  for (const entry of ["composer", "handsfree"]) {
+    const f = fixture(false);
+    if (entry === "handsfree") f.agent.bind({ ...f.base, context: { threadId: null, projectId: null, onNewThreadScreen: false } });
+    f.workspace.registerPresenter({ available: () => true, reveal: () => { throw new Error("Desktop must not use the drawer"); } });
+    const result = await f.execute("focus_thread", { thread_id: "a" });
+    assert.equal(result.status, "success");
+    assert.equal(result.presentation, "navigation");
+    assert.equal(f.calls.some(call => call.method === "resolveThreadViews"), false);
+    assert.equal(f.calls.filter(call => call.method === "runTool" && call.args.name === "focus_thread").length, 1);
+    assert.equal(f.workspace.get().views.length, 0);
+  }
+});
+
+test("stale desktop sessions cannot activate mobile drawer tools", async () => {
+  const f = fixture(false);
+  for (const name of ["focus_threads", "manage_views", "set_view_behavior"]) {
+    const result = await f.execute(name, { action: "clear", thread_ids: ["a"], behavior: "new" });
+    assert.equal(result.status, "error");
+    assert.match(result.output, /mobile-only/);
+  }
+  assert.equal(f.calls.some(call => call.method === "runTool" || call.method === "resolveThreadViews"), false);
 });
 
 test("a host rejection, exception, or absent presenter returns an error to the model", async () => {

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createFakePluginHost, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
-import plugin from "./server.ts";
+import plugin, { toolSchemas, threadViewInstructions } from "./server.ts";
 
 test("session history and plugin logs describe the same stored action, and failed tools mark sessions", async () => {
   const { bb, harness } = createFakePluginHost({ pluginId: "handsfree" });
@@ -31,7 +31,7 @@ test("thread metadata is resolved once per ID and the saved preference applies i
   try {
     await plugin(bb);
     let result = await harness.behavior.callRpc("resolveThreadViews", { threadIds: ["a", "b", "a"] }) as any;
-    assert.equal(result.preference, "auto");
+    assert.equal(result.preference, "reuse");
     assert.deepEqual(result.views.map((view: any) => view.id), ["thread:a", "thread:b"]);
     assert.equal(harness.inspection.sdk.callsTo("threads.get").length, 2);
     const saved = await harness.behavior.callRpc("runTool", {
@@ -58,5 +58,49 @@ test("server tool failures carry explicit status and do not create a separate se
     assert.equal(harness.inspection.logEntries.some(log => log.message.includes("voice tool")), false);
     const unknown = await harness.behavior.callRpc("runTool", { name: "not-a-tool", args: {}, threadId: null, projectId: null }) as any;
     assert.equal(unknown.status, "error");
+  } finally { await harness.lifecycle.dispose(); }
+});
+
+test("desktop calls retain the original focus tool and exclude mobile-only controls", () => {
+  const desktop = toolSchemas([], false);
+  const mobile = toolSchemas([], true);
+  for (const name of ["focus_threads", "manage_views", "set_view_behavior"]) {
+    assert.equal(desktop.some(tool => tool.name === name), false);
+    assert.equal(mobile.some(tool => tool.name === name), true);
+  }
+  const focusDesktop = desktop.find(tool => tool.name === "focus_thread") as any;
+  const focusMobile = mobile.find(tool => tool.name === "focus_thread") as any;
+  assert.equal("disposition" in focusDesktop.parameters.properties, false);
+  assert.equal("disposition" in focusMobile.parameters.properties, true);
+  assert.match(threadViewInstructions(false), /navigates to the requested thread/);
+  assert.match(threadViewInstructions(true), /do not navigate away/);
+  assert.deepEqual(toolSchemas(), desktop);
+});
+
+test("mobile settings never replace desktop navigation and migrate the prototype preference", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "handsfree" });
+  try {
+    await bb.storage.kv.set("config", { viewBehavior: "new" });
+    await plugin(bb);
+    const current = await harness.behavior.callRpc("getConfig", null) as any;
+    assert.equal(current.mobileViewBehavior, "new");
+    assert.equal("viewBehavior" in current, false);
+    const saved = await harness.behavior.callRpc("setConfig", { mobileViewBehavior: "reuse" }) as any;
+    assert.equal(saved.mobileViewBehavior, "reuse");
+    await assert.rejects(harness.behavior.callRpc("setConfig", { mobileViewBehavior: "auto" }));
+  } finally { await harness.lifecycle.dispose(); }
+});
+
+test("desktop focus still opens the real bb thread through the original SDK operation", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "handsfree", sdk: {
+    threads: { open: async () => ({ delivered: 1 }) },
+  } });
+  try {
+    await plugin(bb);
+    const result = await harness.behavior.callRpc("runTool", {
+      name: "focus_thread", args: { thread_id: "target" }, threadId: "source", projectId: "project",
+    }) as any;
+    assert.deepEqual(result, { output: "Focused.", status: "success" });
+    assert.equal(harness.inspection.sdk.callsTo("threads.open").length, 1);
   } finally { await harness.lifecycle.dispose(); }
 });

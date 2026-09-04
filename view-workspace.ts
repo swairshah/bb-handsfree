@@ -45,13 +45,13 @@ export class ViewWorkspace {
     if (![...this.visiblePanels.values()].some(visible => visible())) return null;
     return this.value.views.find(view => view.id === this.value.activeId) ?? null;
   }
-  open(views: readonly WorkspaceView[], disposition: OpenDisposition, preference: OpenDisposition, mobile: boolean) {
+  open(views: readonly WorkspaceView[], disposition: OpenDisposition, preference: "reuse" | "new") {
     if (!views.length) throw new Error("No threads were selected.");
     const presenter = [...this.presenters.values()].reverse().find(p => p.available());
     if (!presenter) throw new Error("This screen cannot show threads beside the call. Start a call from Handsfree or a thread page.");
     // A batch always preserves every requested item, regardless of the default.
     const mode = disposition === "auto" ? preference : disposition;
-    const reuse = views.length === 1 && (mode === "reuse" || (mode === "auto" && mobile));
+    const reuse = views.length === 1 && mode === "reuse";
     const next = [...this.value.views];
     for (const view of views) {
       const existing = next.findIndex(item => item.id === view.id);

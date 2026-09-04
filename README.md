@@ -61,23 +61,26 @@ A voice session is shared across all your bb windows and devices: the sidebar
 shows a live voice bar (with which device the session came through), and any
 window can pick it up or stop it.
 
-## Views beside the call
+## Mobile views beside the call
 
-Ask “show that thread” to open it beside your call. Ask “show all my running
-threads” to keep a collection of threads open. Desktop shows tabs; mobile shows
-one thread with a selector. You can switch or close views by touch or voice;
-closing a view does not stop its thread or the call.
+On mobile, “show that thread” opens a drawer without leaving the voice call.
+“Show all my running threads” keeps them in the drawer's thread switcher.
+These are views inside one drawer, not separate native bb tabs. Closing a view
+does not stop its thread or the call.
 
-Behavior → Thread tabs controls whether opens replace the current tab or keep
-threads in separate tabs. Automatic reuses on mobile and keeps tabs on desktop.
-“Open it in another tab” overrides the default, and “always keep threads in
-separate tabs” saves the preference. Opening several threads always keeps them
-all. The collection lasts for the current app session.
+Behavior → Mobile thread drawer controls whether a new thread replaces the
+shown one or joins the switcher. “Always keep threads in the mobile drawer”
+saves that preference; an explicit request can override it. The collection lasts
+for the current app session. Supported destinations are the Handsfree page and
+existing thread panels; unsupported mobile surfaces report the limitation.
 
-Views work from Handsfree and supported existing-thread panels. A screen without
-a local panel reports that limitation rather than navigating another window.
-See [the design and phone-test checklist](docs/thread-views.md) for SDK limits,
-logging behavior, and the path to additional view types.
+Desktop `focus_thread` continues navigating to the requested thread from both
+the composer and Handsfree page. Mobile settings do not change that behavior.
+Per-entry-point desktop navigation/side-panel settings and native multi-tab
+behavior are a [separate design](docs/desktop-navigation-plan.md).
+
+See [the mobile design and device checklist](docs/thread-views.md) for SDK limits
+and the shared session/plugin logging behavior.
 
 ## Inspecting live threads from the terminal
 
@@ -165,7 +168,7 @@ response.create).
 
 Voice tools: `get_context`, `list_projects`, `list_machines`,
 `list_live_threads`, `list_threads`, `search_threads`, `read_thread`,
-`focus_thread`, `focus_threads`, `manage_views`, `set_view_behavior`, `set_pane`, `send_to_thread`, `start_thread`, `stop_thread`,
+`focus_thread`, `set_pane`, `send_to_thread`, `start_thread`, `stop_thread`,
 `archive_thread`, `rename_thread`, `show_diff`, `update_instructions`,
 `run_plugin_cli`, plus frontend-local `set_composer_text` /
 `append_composer_text`.
@@ -176,3 +179,6 @@ Dev loop:
 bb plugin dev          # rebuild + reload on save
 bb plugin logs handsfree -f # tool traffic and errors
 ```
+
+Mobile calls additionally expose `focus_threads`, `manage_views`, and
+`set_view_behavior` for the drawer. Desktop retains its navigation tool set.
