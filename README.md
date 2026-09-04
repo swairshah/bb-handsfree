@@ -61,6 +61,24 @@ A voice session is shared across all your bb windows and devices: the sidebar
 shows a live voice bar (with which device the session came through), and any
 window can pick it up or stop it.
 
+## Views beside the call
+
+Ask “show that thread” to open it beside your call. Ask “show all my running
+threads” to keep a collection of threads open. Desktop shows tabs; mobile shows
+one thread with a selector. You can switch or close views by touch or voice;
+closing a view does not stop its thread or the call.
+
+Behavior → Thread tabs controls whether opens replace the current tab or keep
+threads in separate tabs. Automatic reuses on mobile and keeps tabs on desktop.
+“Open it in another tab” overrides the default, and “always keep threads in
+separate tabs” saves the preference. Opening several threads always keeps them
+all. The collection lasts for the current app session.
+
+Views work from Handsfree and supported existing-thread panels. A screen without
+a local panel reports that limitation rather than navigating another window.
+See [the design and phone-test checklist](docs/thread-views.md) for SDK limits,
+logging behavior, and the path to additional view types.
+
 ## Inspecting live threads from the terminal
 
 The same "Live threads" view from the sidebar is available as a CLI, for you
@@ -147,7 +165,7 @@ response.create).
 
 Voice tools: `get_context`, `list_projects`, `list_machines`,
 `list_live_threads`, `list_threads`, `search_threads`, `read_thread`,
-`focus_thread`, `set_pane`, `send_to_thread`, `start_thread`, `stop_thread`,
+`focus_thread`, `focus_threads`, `manage_views`, `set_view_behavior`, `set_pane`, `send_to_thread`, `start_thread`, `stop_thread`,
 `archive_thread`, `rename_thread`, `show_diff`, `update_instructions`,
 `run_plugin_cli`, plus frontend-local `set_composer_text` /
 `append_composer_text`.

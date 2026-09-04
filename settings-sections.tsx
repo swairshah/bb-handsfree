@@ -53,6 +53,7 @@ interface VoiceConfig {
   model: RealtimeModel;
   voice: Voice;
   notifications: boolean;
+  viewBehavior: "auto" | "reuse" | "new";
   pluginCommands: string;
   credentialPreference: CredentialPreference;
   shortcuts: Shortcuts;
@@ -326,6 +327,16 @@ export function BehaviorSettings() {
   return (
     <div className="space-y-5">
       <PromptEditor />
+
+      <Group label="Thread tabs" hint="Choose what happens when you ask Aide to show a thread. Requests for several threads always keep them all open.">
+        <label htmlFor="handsfree-view-behavior" className="mb-2 block text-sm">When opening a thread</label>
+        <select id="handsfree-view-behavior" className={selectClass} disabled={loading} value={config?.viewBehavior ?? "auto"}
+          onChange={event => void update({ viewBehavior: event.target.value as VoiceConfig["viewBehavior"] })}>
+          <option value="auto">Automatic — reuse on mobile, keep tabs on desktop</option>
+          <option value="reuse">Replace the current tab</option>
+          <option value="new">Keep threads in separate tabs</option>
+        </select>
+      </Group>
 
       <Group label="Announcements">
         <label className="flex items-center justify-between gap-3">

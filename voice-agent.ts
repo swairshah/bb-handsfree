@@ -1,8 +1,6 @@
-// The voice session singleton for a plugin realm. Lives in its own module so
-// both the composer button (app.tsx) and the Handsfree page (sessions-panel.tsx)
-// can reach it without a circular import. Note: bb renders each surface in a
-// separate realm, so this is one instance PER surface; cross-surface state is
-// shared over realtime presence/command channels (see VoiceAgent below).
+// Voice session singleton for one loaded plugin module. Web slots share it;
+// separate windows/native webviews have separate instances. Presence and call
+// controls cross those boundaries, but opening views stays local to the caller.
 import { toast } from "sonner";
 import type { useRpc } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "./server";
@@ -15,6 +13,8 @@ import {
   writeAudioDevicePreferences,
   type AudioDevicePreferences,
 } from "./audio-devices.ts";
+import { actionStatus } from "./session-events.ts";
+import { ViewWorkspace, viewWorkspace, type OpenDisposition } from "./view-workspace.ts";
 import { clientId, realmId, identityTag, clientDescriptor, deviceSummary } from "./client-identity.ts";
 
 export type VoiceState = "idle" | "connecting" | "live" | "muted";
@@ -37,18 +37,6 @@ interface RemotePresence {
   ownerClient?: string;
   ownerRealm?: string;
 }
-
-/**
- * Tools measured to background the owner realm on mobile (→ iOS suspends the mic
- * → the call dies). Verified on 2026-09-01: `focus_thread` backgrounds the app;
- * `set_pane` and `start_thread` do NOT. On mobile these don't navigate during a
- * live call — `focus_thread` instead opens the thread in the companion drawer
- * beside the call (see handleToolCall), which keeps the mic alive. If a new/other
- * tool ever backgrounds us anyway, `mic.suspend.teardown {cause}` names it in the
- * logs and the call still ends cleanly — so this list can stay small and be
- * extended from evidence, not guesswork.
- */
-const MOBILE_NAV_TOOLS = new Set(["focus_thread"]);
 
 /**
  * Tools that do real work AND navigate (spawn/diff, then `bb.sdk.threads.open`).
@@ -180,15 +168,9 @@ function waitForIceGathering(pc: RTCPeerConnection, timeoutMs = 2000): Promise<v
 }
 
 /**
- * Voice session for one plugin realm. bb renders each surface (composer,
- * sidebar, the Handsfree page) in its own JS realm, so this singleton is
- * per-surface, not truly app-global: the realm that starts a call OWNS the
- * WebRTC session; the call keeps running there as the user navigates within
- * that realm. Other realms don't hold the session — they mirror its coarse
- * state over the `voice-presence` broadcast and relay stop/mute back to the
- * owner via `voice-command`, so every surface reflects and can control the one
- * live call. Mounted buttons keep `bindings` fresh (latest composer + route
- * context win) so tool calls act on what the user is currently looking at.
+ * Owns WebRTC in the runtime where a call starts. Other runtimes mirror call
+ * presence and relay explicit stop/mute controls. Mounted composer bindings
+ * and the visible view supply local tool context; unmounting releases bindings.
  */
 export class VoiceAgent {
   private state: VoiceState = "idle";
@@ -245,13 +227,11 @@ export class VoiceAgent {
   private remoteExpiryTimer: ReturnType<typeof setInterval> | null = null;
   /** Guards the once-per-realm `client.hello` observability record. */
   private helloed = false;
-  /**
-   * Opens a thread in the Handsfree page's companion surface (a bottom drawer on
-   * mobile). Set by the page surface independently of `bindings` (so a composer's
-   * bind() can't clobber it) and cleared on unmount. Null in realms without a
-   * mounted Handsfree page.
-   */
-  private companionOpener: ((threadId: string) => void) | null = null;
+  private workspace: ViewWorkspace;
+  private bindingSources = new Map<symbol, { bindings: Bindings; fallback: boolean }>();
+  private logQueue: Promise<unknown> | null = null;
+
+  constructor(workspace: ViewWorkspace = viewWorkspace) { this.workspace = workspace; }
   /** The most recent tool call, so a suspend/teardown can name its likely cause. */
   private lastTool: { name: string; at: number } | null = null;
 
@@ -348,22 +328,20 @@ export class VoiceAgent {
 
   readonly getAudioPreferences = (): AudioDevicePreferences => this.audioPreferences;
 
-  bind(bindings: Bindings) {
-    this.bindings = bindings;
-    this.helloOnce("composer");
-  }
+  bind(bindings: Bindings) { return this.registerBindings(bindings, false); }
+  bindFallback(bindings: Bindings) { return this.registerBindings(bindings, true); }
 
-  /**
-   * Bind a surface only if nothing is bound yet. The Handsfree page uses this so
-   * a call can be started with no composer mounted (its FAB), without clobbering
-   * the richer binding a real composer installs — a live composer's text tools
-   * must keep targeting that composer, not the page's new-thread fallback.
-   */
-  bindFallback(bindings: Bindings) {
-    if (!this.bindings) this.bindings = bindings;
-    this.helloOnce("page");
+  private registerBindings(bindings: Bindings, fallback: boolean) {
+    const key = Symbol();
+    this.bindingSources.set(key, { bindings, fallback });
+    const refresh = () => {
+      const sources = [...this.bindingSources.values()].reverse();
+      this.bindings = (sources.find(source => !source.fallback) ?? sources[0])?.bindings ?? null;
+    };
+    refresh();
+    this.helloOnce(fallback ? "page" : "composer");
+    return () => { this.bindingSources.delete(key); refresh(); };
   }
-
   /**
    * Announce this realm once it can talk to the backend, so every surface (even
    * idle ones that never start a call) leaves a durable record of its client +
@@ -523,37 +501,6 @@ export class VoiceAgent {
     }
   }
 
-  // ---- companion drawer (the Handsfree page's mobile companion surface) ----
-
-  /** The Handsfree page registers (and clears) its drawer opener here. */
-  setCompanionOpener(opener: ((threadId: string) => void) | null) {
-    this.companionOpener = opener;
-  }
-
-  /**
-   * Show a thread in the companion drawer. If this realm hosts the page, open it
-   * directly; otherwise relay over the bus so whichever realm has the mounted
-   * page opens it (the call may be owned by a composer realm with no page).
-   */
-  private openCompanion(threadId: string) {
-    if (this.companionOpener) {
-      this.companionOpener(threadId);
-      return;
-    }
-    const rpc = this.bindings?.rpc;
-    if (rpc) {
-      void rpc.call("sendCompanion", { threadId, client: clientId, realm: realmId }).catch(() => undefined);
-    }
-  }
-
-  /** Handle a relayed companion request; only a realm with a mounted page acts. */
-  applyCompanion(payload: unknown) {
-    const threadId = (payload as { threadId?: unknown } | null)?.threadId;
-    if (typeof threadId === "string" && threadId && this.companionOpener) {
-      this.companionOpener(threadId);
-    }
-  }
-
   /** Apply a relayed command — but only if THIS realm owns that call. */
   applyVoiceCommand(payload: unknown) {
     const p = payload as { nonce?: unknown; action?: unknown } | null;
@@ -708,9 +655,7 @@ export class VoiceAgent {
     this.noteActivity(kind, payload);
     // Stamp which client/realm produced this event (see client-identity.ts) so
     // the transcript/DB shows where things actually happened across surfaces.
-    void bindings.rpc
-      .call("logEvent", { sessionId, kind, payload: { ...payload, _id: identityTag() } })
-      .catch(() => undefined);
+    this.writeEvent(bindings.rpc, sessionId, kind, payload);
   }
 
   /** Track the latest meaningful event for the dock ticker (ignores diagnostics). */
@@ -733,13 +678,17 @@ export class VoiceAgent {
   private logDiag(kind: string, payload: Record<string, unknown> = {}) {
     const rpc = this.bindings?.rpc;
     if (!rpc) return;
-    void rpc
-      .call("logEvent", {
-        sessionId: this.nonce ?? "audio-diagnostics",
-        kind,
-        payload: { ...payload, _id: identityTag() },
-      })
-      .catch(() => undefined);
+    this.writeEvent(rpc, this.nonce ?? "audio-diagnostics", kind, payload);
+  }
+
+  private writeEvent(rpc: RpcClient, sessionId: string, kind: string, payload: Record<string, unknown>) {
+    const event = { sessionId, kind, payload: { ...payload, _id: identityTag() } };
+    const send = () => rpc.call("logEvent", event);
+    // Preserve call/result ordering while letting the realtime audio proceed.
+    const pending = (this.logQueue ? this.logQueue.then(send) : Promise.resolve().then(send))
+      .catch(error => { console.warn("Handsfree session event could not be saved", { sessionId, kind, error }); });
+    this.logQueue = pending;
+    void pending.finally(() => { if (this.logQueue === pending) this.logQueue = null; });
   }
 
   // ---- audio lifecycle: keep inbound audio playing and the mic alive across
@@ -994,87 +943,121 @@ export class VoiceAgent {
   }
 
   private async handleToolCall(dc: RTCDataChannel, event: Record<string, unknown>) {
+    if (dc.readyState !== "open" || !this.nonce) return;
     const bindings = this.bindings;
     const name = String(event.name ?? "");
     const callId = String(event.call_id ?? "");
+    const toolSessionId = this.nonce;
     let args: Record<string, unknown> = {};
     try {
       args = JSON.parse(typeof event.arguments === "string" ? event.arguments : "{}");
     } catch {
       /* keep {} */
     }
-    this.log("tool.call", { name, args });
+    this.log("tool.call", { name, args, callId });
     this.lastTool = { name, at: Date.now() };
     let output: string;
-    if (!bindings) {
-      output = "Tool error: no bb surface is bound right now.";
-    } else if (name === "set_composer_text") {
-      if (!bindings.composer) {
-        output = "No composer is focused right now — open or start a thread to draft a message.";
+    let status: "success" | "error" | undefined;
+    let presentation: string | undefined;
+    let label: string | undefined;
+    const shown = this.workspace.current();
+    const context = shown
+      ? { threadId: shown.threadId, projectId: shown.projectId, onNewThreadScreen: false }
+      : bindings?.context;
+    try {
+      if (!bindings) {
+        throw new Error("No bb surface is bound right now.");
+      } else if (name === "set_composer_text") {
+        if (!bindings.composer || (shown && bindings.context.threadId !== shown.threadId)) {
+          throw new Error("No matching composer is available. Tap the shown thread’s composer to draft a message.");
+        } else {
+          bindings.composer.setText(String(args.text ?? ""));
+          output = "Composer text replaced.";
+        }
+      } else if (name === "append_composer_text") {
+        if (!bindings.composer || (shown && bindings.context.threadId !== shown.threadId)) {
+          throw new Error("No matching composer is available. Tap the shown thread’s composer to draft a message.");
+        } else {
+          const text = String(args.text ?? "");
+          bindings.composer.updateText((current) => (current ? `${current}\n${text}` : text));
+          output = "Text appended to composer.";
+        }
+      } else if (
+        name === "start_thread" &&
+        !(typeof args.prompt === "string" && args.prompt.trim())
+      ) {
+        // No dictated prompt: never fabricate one — open bb's New thread screen
+        // with the project preselected and let the user type it themselves.
+        const projectId =
+          typeof args.project_id === "string" && args.project_id
+            ? args.project_id
+            : context?.projectId ?? null;
+        bindings.openNewThread(projectId);
+        output =
+          "Opened the New thread screen with the project preselected. The user will type the prompt themselves; no thread exists yet.";
+      } else if (name === "focus_thread" || name === "focus_threads") {
+        const ids = name === "focus_thread" ? [args.thread_id] : args.thread_ids;
+        if (!Array.isArray(ids) || !ids.length || ids.length > 100 || ids.some(id => typeof id !== "string" || !id.trim())) {
+          throw new Error("Provide between 1 and 100 valid thread IDs.");
+        }
+        const disposition = name === "focus_threads" ? "new" : args.disposition ?? "auto";
+        if (disposition !== "auto" && disposition !== "reuse" && disposition !== "new") throw new Error("Invalid tab disposition.");
+        const { views, preference } = await bindings.rpc.call("resolveThreadViews", { threadIds: ids as string[] });
+        if (dc.readyState !== "open" || this.nonce !== toolSessionId) throw new Error("The call ended before the threads could be shown.");
+        this.workspace.open(views, disposition as OpenDisposition, preference, clientDescriptor.mobile);
+        output = views.length === 1 ? `Showing ${views[0].title}.` : `Showing ${views.length} threads. ${views[0].title} is selected.`;
+        label = views.length === 1 ? `Showed ${views[0].title}` : `Showed ${views.length} threads`;
+        status = "success";
+        presentation = "panel";
+      } else if (name === "manage_views") {
+        const current = this.workspace.get();
+        const id = typeof args.view_id === "string" ? args.view_id : "";
+        const view = current.views.find(item => item.id === id);
+        if (args.action === "list") {
+          output = JSON.stringify(current);
+        } else if (args.action === "clear") {
+          this.workspace.clear();
+          output = "Closed all views. Threads and the call are still running.";
+        } else if (!view) {
+          throw new Error("That view is not open. List the open views first.");
+        } else if (args.action === "select") {
+          this.workspace.open([view], "new", "new", clientDescriptor.mobile);
+          output = `Showing ${view.title}.`;
+        } else if (args.action === "close") {
+          this.workspace.close(id);
+          output = `Closed ${view.title}. The thread is still running.`;
+        } else throw new Error("Unknown view action.");
+      } else if (name === "get_context") {
+        const result = await bindings.rpc.call("runTool", { name, args, ...context! });
+        output = result.output;
+        status = result.status;
       } else {
-        bindings.composer.setText(String(args.text ?? ""));
-        output = "Composer text replaced.";
-      }
-    } else if (name === "append_composer_text") {
-      if (!bindings.composer) {
-        output = "No composer is focused right now — open or start a thread to draft a message.";
-      } else {
-        const text = String(args.text ?? "");
-        bindings.composer.updateText((current) => (current ? `${current}\n${text}` : text));
-        output = "Text appended to composer.";
-      }
-    } else if (
-      name === "start_thread" &&
-      !(typeof args.prompt === "string" && args.prompt.trim())
-    ) {
-      // No dictated prompt: never fabricate one — open bb's New thread screen
-      // with the project preselected and let the user type it themselves.
-      const projectId =
-        typeof args.project_id === "string" && args.project_id
-          ? args.project_id
-          : bindings.context.projectId;
-      bindings.openNewThread(projectId);
-      output =
-        "Opened the New thread screen with the project preselected. The user will type the prompt themselves; no thread exists yet.";
-    } else if (
-      MOBILE_NAV_TOOLS.has(name) &&
-      clientDescriptor.mobile &&
-      (this.state === "live" || this.state === "muted")
-    ) {
-      // On mobile this tool would background the realm that owns the call and iOS
-      // would suspend the mic — the call would die. So during a live mobile call
-      // focus_thread doesn't navigate; it opens the thread in the companion drawer
-      // beside the call instead, which keeps the mic alive.
-      const threadId = String(args.thread_id ?? "");
-      if (!threadId) {
-        output = "No thread_id given.";
-      } else {
-        this.logDiag("companion.opened", { name, threadId });
-        this.openCompanion(threadId);
-        output = "Opened the thread in the drawer beside the call.";
-      }
-    } else {
-      // These tools navigate (…→ threads.open) which would background a live
-      // mobile call — tell the server not to focus so the work still happens but
-      // nothing navigates. (The promptless start_thread is handled above.)
-      const suppressFocus =
-        FOCUS_SUPPRESSIBLE_TOOLS.has(name) &&
-        clientDescriptor.mobile &&
-        (this.state === "live" || this.state === "muted");
-      if (suppressFocus) this.logDiag("nav.suppressedFocus", { name });
-      try {
+        // These tools navigate (…→ threads.open) which would background a live
+        // mobile call — tell the server not to focus so the work still happens but
+        // nothing navigates. (The promptless start_thread is handled above.)
+        const suppressFocus =
+          FOCUS_SUPPRESSIBLE_TOOLS.has(name) &&
+          clientDescriptor.mobile &&
+          (this.state === "live" || this.state === "muted");
+        if (suppressFocus) this.logDiag("nav.suppressedFocus", { name });
         const result = await bindings.rpc.call("runTool", {
           name,
           args: suppressFocus ? { ...args, focus: false } : args,
-          ...bindings.context,
+          ...context!,
         });
         output = result.output;
-      } catch (error) {
-        output = `Tool error: ${error instanceof Error ? error.message : String(error)}`;
+        status = result.status;
       }
+    } catch (error) {
+      status = "error";
+      output = `Tool error: ${error instanceof Error ? error.message : String(error)}`;
     }
-    this.log("tool.result", { name, output: output.slice(0, 4000) });
-    if (!callId || dc.readyState !== "open") return;
+    // Use the captured session: a stopped call's late result must not land in a new one.
+    if (toolSessionId && bindings) this.writeEvent(bindings.rpc, toolSessionId, "tool.result", {
+      name, callId, output: output.slice(0, 4000), status: status ?? actionStatus({ output }),
+      ...(presentation ? { presentation } : {}), ...(label ? { label } : {}),
+    });
+    if (!callId || dc.readyState !== "open" || this.nonce !== toolSessionId) return;
     // Creating the output item is always safe; only response.create must wait.
     dc.send(
       JSON.stringify({

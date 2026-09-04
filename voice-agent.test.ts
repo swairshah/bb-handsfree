@@ -298,7 +298,7 @@ test("stopping during the SDP exchange closes the mic and cancels startup", asyn
         return { ok: true };
       }) as never,
     },
-    context: { threadId: null, projectId: null },
+    context: { threadId: null, projectId: null, onNewThreadScreen: false },
     composer: { setText() {}, updateText() {} },
     openNewThread() {},
   });
@@ -310,12 +310,12 @@ test("stopping during the SDP exchange closes the mic and cancels startup", asyn
     agent.stop();
 
     assert.equal(track.stopped, true);
-    assert.equal(peer?.closed, true);
+    assert.equal((peer as FakePeerConnection | null)?.closed, true);
 
     resolveCall();
     await new Promise((resolve) => setImmediate(resolve));
     // Stopped mid-exchange: the answer must never be applied.
-    assert.equal(peer?.setRemoteCalls, 0);
+    assert.equal((peer as FakePeerConnection | null)?.setRemoteCalls, 0);
     assert.equal(agent.getState(), "idle");
   } finally {
     resolveCall();
