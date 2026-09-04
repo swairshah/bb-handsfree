@@ -40,12 +40,13 @@ interface RemotePresence {
 
 /**
  * Tools measured to background the owner realm on mobile (→ iOS suspends the mic
- * → the call dies), so they're refused during a live mobile call. Verified on
- * 2026-09-01: `focus_thread` backgrounds the app; `set_pane` and `start_thread`
- * do NOT. This is the correctness-optimization list; if a new/other tool ever
- * backgrounds us anyway, `mic.suspend.teardown {cause}` names it in the logs and
- * the call still ends cleanly — so this list can stay small and be extended from
- * evidence, not guesswork.
+ * → the call dies). Verified on 2026-09-01: `focus_thread` backgrounds the app;
+ * `set_pane` and `start_thread` do NOT. On mobile these don't navigate during a
+ * live call — `focus_thread` instead opens the thread in the companion drawer
+ * beside the call (see handleToolCall), which keeps the mic alive. If a new/other
+ * tool ever backgrounds us anyway, `mic.suspend.teardown {cause}` names it in the
+ * logs and the call still ends cleanly — so this list can stay small and be
+ * extended from evidence, not guesswork.
  */
 const MOBILE_NAV_TOOLS = new Set(["focus_thread"]);
 
@@ -244,6 +245,13 @@ export class VoiceAgent {
   private remoteExpiryTimer: ReturnType<typeof setInterval> | null = null;
   /** Guards the once-per-realm `client.hello` observability record. */
   private helloed = false;
+  /**
+   * Opens a thread in the Handsfree page's companion surface (a bottom drawer on
+   * mobile). Set by the page surface independently of `bindings` (so a composer's
+   * bind() can't clobber it) and cleared on unmount. Null in realms without a
+   * mounted Handsfree page.
+   */
+  private companionOpener: ((threadId: string) => void) | null = null;
   /** The most recent tool call, so a suspend/teardown can name its likely cause. */
   private lastTool: { name: string; at: number } | null = null;
 
@@ -512,6 +520,37 @@ export class VoiceAgent {
       this.remotePresence = null;
       this.disarmRemoteExpiry();
       this.emitChange();
+    }
+  }
+
+  // ---- companion drawer (the Handsfree page's mobile companion surface) ----
+
+  /** The Handsfree page registers (and clears) its drawer opener here. */
+  setCompanionOpener(opener: ((threadId: string) => void) | null) {
+    this.companionOpener = opener;
+  }
+
+  /**
+   * Show a thread in the companion drawer. If this realm hosts the page, open it
+   * directly; otherwise relay over the bus so whichever realm has the mounted
+   * page opens it (the call may be owned by a composer realm with no page).
+   */
+  private openCompanion(threadId: string) {
+    if (this.companionOpener) {
+      this.companionOpener(threadId);
+      return;
+    }
+    const rpc = this.bindings?.rpc;
+    if (rpc) {
+      void rpc.call("sendCompanion", { threadId, client: clientId, realm: realmId }).catch(() => undefined);
+    }
+  }
+
+  /** Handle a relayed companion request; only a realm with a mounted page acts. */
+  applyCompanion(payload: unknown) {
+    const threadId = (payload as { threadId?: unknown } | null)?.threadId;
+    if (typeof threadId === "string" && threadId && this.companionOpener) {
+      this.companionOpener(threadId);
     }
   }
 
@@ -1002,12 +1041,18 @@ export class VoiceAgent {
       clientDescriptor.mobile &&
       (this.state === "live" || this.state === "muted")
     ) {
-      // On mobile, this tool backgrounds the realm that owns the call and iOS
-      // suspends the mic — the call dies. So don't run it during a live mobile
-      // call; have the model point the user to the tap target instead.
-      this.logDiag("nav.blocked", { name });
-      output =
-        "On mobile you can't navigate the app during a live call — it would background the call and cut the mic. Do NOT navigate. Instead, tell the user in one short sentence exactly what to tap to get there themselves.";
+      // On mobile this tool would background the realm that owns the call and iOS
+      // would suspend the mic — the call would die. So during a live mobile call
+      // focus_thread doesn't navigate; it opens the thread in the companion drawer
+      // beside the call instead, which keeps the mic alive.
+      const threadId = String(args.thread_id ?? "");
+      if (!threadId) {
+        output = "No thread_id given.";
+      } else {
+        this.logDiag("companion.opened", { name, threadId });
+        this.openCompanion(threadId);
+        output = "Opened the thread in the drawer beside the call.";
+      }
     } else {
       // These tools navigate (…→ threads.open) which would background a live
       // mobile call — tell the server not to focus so the work still happens but

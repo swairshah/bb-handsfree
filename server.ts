@@ -239,6 +239,21 @@ export const rpcContract = defineRpcContract({
     output: z.object({ ok: z.literal(true) }).strict(),
   },
   /**
+   * Relay a "show this thread in the companion drawer" request to whichever realm
+   * has the Handsfree page mounted (the call may be owned by a composer realm
+   * that has no page of its own).
+   */
+  sendCompanion: {
+    input: z
+      .object({
+        threadId: z.string().min(1),
+        client: z.string().optional(),
+        realm: z.string().optional(),
+      })
+      .strict(),
+    output: z.object({ ok: z.literal(true) }).strict(),
+  },
+  /**
    * End a call authoritatively, without needing its owner realm to act — the
    * owner may be a frozen, backgrounded mobile webview that can no longer receive
    * commands. Marks the session stopped (so the list stops showing it live) and
@@ -1296,6 +1311,10 @@ export default async function plugin(bb: BbPluginApi) {
     },
     async sendVoiceCommand({ nonce, action, client, realm }) {
       bb.realtime.publish("voice-command", { nonce, action, client, realm });
+      return { ok: true as const };
+    },
+    async sendCompanion({ threadId, client, realm }) {
+      bb.realtime.publish("voice-companion", { threadId, client, realm });
       return { ok: true as const };
     },
     async forceStop({ nonce }) {

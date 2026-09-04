@@ -19,6 +19,7 @@ import type { PluginThreadListProps } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "./server";
 import { voiceAgent } from "./voice-agent";
 import { SessionsPanel } from "./sessions-panel";
+import { COMPANION_TAB, CompanionTab } from "./companion";
 import { AudioSettings, BehaviorSettings, ModelsSettings, ShortcutsSettings } from "./settings-sections";
 import { cn } from "@/lib/utils";
 import { AUDIO_DEVICE_STORAGE_KEY } from "./audio-devices";
@@ -360,6 +361,19 @@ export default definePluginApp((app) => {
     path: "sessions",
     component: SessionsPanel,
     experimental_sidebarAccessory: SidebarLiveIndicator,
+    // The companion surface: on mobile it renders as a drawer beside the call, so
+    // Aide can show a thread during a live call without navigating (which would
+    // background the app and cut the mic). The voice agent drives it via
+    // openFixedTab; see companion.tsx and the focus_thread routing in voice-agent.
+    fixedTabs: [
+      {
+        ...COMPANION_TAB,
+        title: "Companion",
+        icon: "PanelRight",
+        component: CompanionTab,
+        layout: "flush",
+      },
+    ],
   });
   // --- Global surface trial: multiple always-reachable triggers for the same
   // singleton call. All are pure toggles; the composer button owns the binding.
