@@ -29,6 +29,7 @@ import {
   type Voice,
 } from "./models";
 import { voiceAgent } from "./voice-agent";
+import { VoicePreview } from "./voice-preview";
 import { deviceDisplayLabel } from "./audio-devices";
 import {
   DEFAULT_SHORTCUTS,
@@ -297,6 +298,7 @@ export function ModelsSettings() {
           ))}
         </select>
       </label>
+      <VoicePreview key={`${model}:${voice}`} voice={voice} disabled={loading} />
     </div>
   );
 }

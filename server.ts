@@ -34,6 +34,11 @@ const shortcutsSchema = z
   .strict();
 
 export const rpcContract = defineRpcContract({
+  /** A receive-only voice sample, separate from the user's operator session. */
+  previewVoice: {
+    input: z.object({ sdp: z.string().min(1).max(16384), voice: z.enum(VOICE_OPTIONS) }).strict(),
+    output: z.object({ sdp: z.string().max(65536) }).strict(),
+  },
   /** Exchange a WebRTC SDP offer with OpenAI Realtime. Returns the answer. */
   createCall: {
     input: z
@@ -613,7 +618,7 @@ export default async function plugin(bb: BbPluginApi) {
     }
   }
 
-  async function codexToken(): Promise<string | null> {
+  async function codexToken(signal?: AbortSignal): Promise<string | null> {
     let auth: { tokens?: { access_token?: string; refresh_token?: string } };
     try {
       auth = JSON.parse(readFileSync(CODEX_AUTH_PATH, "utf8"));
@@ -627,6 +632,7 @@ export default async function plugin(bb: BbPluginApi) {
     if (!refresh) return null;
     try {
       const response = await fetch("https://auth.openai.com/oauth/token", {
+        signal,
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -665,19 +671,19 @@ export default async function plugin(bb: BbPluginApi) {
     }
   }
 
-  async function apiKey(): Promise<string> {
+  async function apiKey(signal?: AbortSignal): Promise<string> {
     const { openaiApiKey } = await settings.get();
     const { credentialPreference } = await readConfig();
     const key = openaiApiKey || process.env.OPENAI_API_KEY;
     // When the user pinned the subscription, try it first and only fall back to
     // a key. Otherwise (auto / apiKey) a key wins, then the subscription.
     if (credentialPreference === "subscription") {
-      const codex = await codexToken();
+      const codex = await codexToken(signal);
       if (codex) return codex;
       if (key) return key;
     } else {
       if (key) return key;
-      const codex = await codexToken();
+      const codex = await codexToken(signal);
       if (codex) return codex;
     }
     throw new Error(
@@ -1135,7 +1141,39 @@ export default async function plugin(bb: BbPluginApi) {
     },
   });
 
+  let previewConnecting: boolean = false;
   bb.rpc.register(rpcContract, {
+    async previewVoice({ sdp, voice }): Promise<{ sdp: string }> {
+      if (previewConnecting) throw new Error("Another voice preview is connecting. Try again in a moment.");
+      previewConnecting = true;
+      try {
+        const signal: AbortSignal = AbortSignal.timeout(15000);
+        const key: string = await apiKey(signal);
+        const { model } = await readConfig();
+        const form: FormData = new FormData();
+        form.set("sdp", sdp);
+        form.set("session", JSON.stringify({
+          type: "realtime", model,
+          instructions: 'Say exactly: "Hi there! Here’s a quick preview of my voice. How can I help you today?"',
+          max_output_tokens: 256,
+          audio: { input: { turn_detection: null }, output: { voice } },
+          tools: [], tool_choice: "none",
+        }));
+        const response: Response = await fetch(REALTIME_ENDPOINT, {
+          method: "POST", headers: { Authorization: `Bearer ${key}` },
+          body: form, signal,
+        });
+        if (!response.ok) {
+          await response.body?.cancel();
+          throw new Error(`Voice preview could not connect (${response.status}). Check your OpenAI credential in Models & voice.`);
+        }
+        const answer: string = await response.text();
+        if (answer.length > 65536) throw new Error("Voice preview returned an oversized answer.");
+        return { sdp: answer };
+      } finally {
+        previewConnecting = false;
+      }
+    },
     async createCall({ sdp, threadId, projectId, onNewThreadScreen, nonce }) {
       const key = await apiKey();
       const { model, voice } = await readConfig();

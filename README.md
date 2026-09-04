@@ -158,3 +158,13 @@ Dev loop:
 bb plugin dev          # rebuild + reload on save
 bb plugin logs handsfree -f # tool traffic and errors
 ```
+
+## Preview a voice
+
+In **Settings → Plugins → Handsfree → Models & voice**, select a voice and click
+**Preview voice** to hear a short sample using your configured model and credentials.
+Click **Stop preview** to end it early. Changing the voice/model or leaving
+settings also stops playback. The preview does not capture microphone audio
+or run the operator’s tools. Normal voice-service usage applies.
+
+Run `bun run test:voice-preview` for the playback lifecycle tests.
