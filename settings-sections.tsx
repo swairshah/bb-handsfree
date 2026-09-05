@@ -393,31 +393,40 @@ export function DefaultBehaviorSettings() {
 
   return (
     <div className={cn(settingsCardClass, "space-y-5")}>
-      <p className="text-xs text-muted-foreground">Choose where Aide opens things during a call.</p>
+      <p className="text-xs text-muted-foreground">Choose where Handsfree shows threads during a call.</p>
       <Group label="Desktop">
-        {([
-          ["desktopComposerDestination", "When starting from the composer"],
-          ["desktopAideDestination", "When starting from the Aide page"],
-        ] as const).map(([key, label]) => (
-          <SettingRow key={key} id={`handsfree-${key}`} label={label}>
-            <select id={`handsfree-${key}`} className={selectClass} disabled={loading}
-              value={config?.[key] ?? DESKTOP_DEFAULTS[key]}
-              onChange={event => void update({ [key]: event.target.value as "navigate" | "panel" })}>
+        <div className="space-y-3">
+          <SettingRow id="handsfree-desktopComposerDestination" label="Calls from a thread’s composer"
+            hint="Switch the main view, or show the thread alongside it.">
+            <select id="handsfree-desktopComposerDestination" className={selectClass} disabled={loading}
+              value={config?.desktopComposerDestination ?? DESKTOP_DEFAULTS.desktopComposerDestination}
+              onChange={event => void update({ desktopComposerDestination: event.target.value as "navigate" | "panel" })}>
               <option value="navigate">Main view</option>
               <option value="panel">Side panel</option>
             </select>
           </SettingRow>
-        ))}
-        <SettingRow id="handsfree-desktop-tabs" label="When opening in the side panel">
-          <select id="handsfree-desktop-tabs" className={selectClass} disabled={loading} value={config?.desktopTabBehavior ?? "new"}
-            onChange={event => void update({ desktopTabBehavior: event.target.value as "reuse" | "new" })}>
-            <option value="new">New tab</option>
-            <option value="reuse">Reuse preview</option>
-          </select>
-        </SettingRow>
-        <p className="text-xs text-muted-foreground">Separate tabs are available from a thread page. The Aide page has one thread view.</p>
+          <SettingRow id="handsfree-desktop-tabs" label="Threads beside the composer"
+            hint="Keep separate tabs, or replace the thread in one shared tab.">
+            <select id="handsfree-desktop-tabs" className={selectClass} disabled={loading} value={config?.desktopTabBehavior ?? "new"}
+              onChange={event => void update({ desktopTabBehavior: event.target.value as "reuse" | "new" })}>
+              <option value="new">Separate tabs</option>
+              <option value="reuse">One shared tab</option>
+            </select>
+          </SettingRow>
+        </div>
+        <div className="border-t border-border/50 pt-3">
+          <SettingRow id="handsfree-desktopAideDestination" label="Calls from the plugin page"
+            hint="The side panel keeps the plugin page open, with one shared thread view.">
+            <select id="handsfree-desktopAideDestination" className={selectClass} disabled={loading}
+              value={config?.desktopAideDestination ?? DESKTOP_DEFAULTS.desktopAideDestination}
+              onChange={event => void update({ desktopAideDestination: event.target.value as "navigate" | "panel" })}>
+              <option value="navigate">Main view</option>
+              <option value="panel">Side panel</option>
+            </select>
+          </SettingRow>
+        </div>
       </Group>
-      <Group label="Mobile" hint="View threads in the drawer while keeping the call open.">
+      <Group label="Mobile" hint="From the plugin page, threads open in a bottom drawer without leaving the call. You can keep multiple views and switch between them; only one is visible at a time.">
         <SettingRow id="handsfree-view-behavior" label="When opening another thread">
           <select id="handsfree-view-behavior" className={selectClass} disabled={loading} value={config?.mobileViewBehavior ?? "reuse"}
             onChange={event => void update({ mobileViewBehavior: event.target.value as VoiceConfig["mobileViewBehavior"] })}>
@@ -426,7 +435,7 @@ export function DefaultBehaviorSettings() {
           </select>
         </SettingRow>
       </Group>
-      <p className="text-xs italic text-muted-foreground">Ask Aide explicitly to open somewhere else for one request. Your defaults stay the same.</p>
+      <p className="text-xs italic text-muted-foreground">Explicit voice requests can use a different supported view for one action, such as “open in the side panel” on desktop. Your saved defaults stay the same.</p>
     </div>
   );
 }
