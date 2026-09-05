@@ -53,6 +53,7 @@ interface VoiceConfig {
   model: RealtimeModel;
   voice: Voice;
   notifications: boolean;
+  mobileViewBehavior: "reuse" | "new";
   pluginCommands: string;
   credentialPreference: CredentialPreference;
   shortcuts: Shortcuts;
@@ -326,6 +327,15 @@ export function BehaviorSettings() {
   return (
     <div className="space-y-5">
       <PromptEditor />
+
+      <Group label="Mobile thread drawer" hint="On mobile, show threads without leaving the call. Desktop still navigates directly to threads.">
+        <label htmlFor="handsfree-view-behavior" className="mb-2 block text-sm">When showing a thread on mobile</label>
+        <select id="handsfree-view-behavior" className={selectClass} disabled={loading} value={config?.mobileViewBehavior ?? "reuse"}
+          onChange={event => void update({ mobileViewBehavior: event.target.value as VoiceConfig["mobileViewBehavior"] })}>
+          <option value="reuse">Replace the shown thread</option>
+          <option value="new">Keep threads in the drawer switcher</option>
+        </select>
+      </Group>
 
       <Group label="Announcements">
         <label className="flex items-center justify-between gap-3">

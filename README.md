@@ -61,6 +61,27 @@ A voice session is shared across all your bb windows and devices: the sidebar
 shows a live voice bar (with which device the session came through), and any
 window can pick it up or stop it.
 
+## Mobile views beside the call
+
+On mobile, “show that thread” opens a drawer without leaving the voice call.
+“Show all my running threads” keeps them in the drawer's thread switcher.
+These are views inside one drawer, not separate native bb tabs. Closing a view
+does not stop its thread or the call.
+
+Behavior → Mobile thread drawer controls whether a new thread replaces the
+shown one or joins the switcher. “Always keep threads in the mobile drawer”
+saves that preference; an explicit request can override it. The collection lasts
+for the current app session. Supported destinations are the Handsfree page and
+existing thread panels; unsupported mobile surfaces report the limitation.
+
+Desktop `focus_thread` continues navigating to the requested thread from both
+the composer and Handsfree page. Mobile settings do not change that behavior.
+Per-entry-point desktop navigation/side-panel settings and native multi-tab
+behavior are a [separate design](docs/desktop-navigation-plan.md).
+
+See [the mobile design and device checklist](docs/thread-views.md) for SDK limits
+and the shared session/plugin logging behavior.
+
 ## Inspecting live threads from the terminal
 
 The same "Live threads" view from the sidebar is available as a CLI, for you
@@ -158,3 +179,6 @@ Dev loop:
 bb plugin dev          # rebuild + reload on save
 bb plugin logs handsfree -f # tool traffic and errors
 ```
+
+Mobile calls additionally expose `focus_threads`, `manage_views`, and
+`set_view_behavior` for the drawer. Desktop retains its navigation tool set.

@@ -19,6 +19,7 @@ import {
   type RealtimeModel,
   type Voice,
 } from "./models";
+import { sessionEventLog } from "./session-events.ts";
 import { DEFAULT_SHORTCUTS, isValidShortcut, normalizeShortcuts, type Shortcuts } from "./shortcuts";
 
 /**
@@ -43,6 +44,8 @@ export const rpcContract = defineRpcContract({
         projectId: z.string().nullable(),
         /** True when the user is on the New thread screen (no thread yet). */
         onNewThreadScreen: z.boolean().optional(),
+        /** Device policy is fixed for the call, independently of its entry point. */
+        mobile: z.boolean().optional(),
         /** Unique per call; broadcast so every other window ends its session. */
         nonce: z.string().min(1),
       })
@@ -120,6 +123,7 @@ export const rpcContract = defineRpcContract({
         model: z.enum(MODEL_OPTIONS),
         voice: z.enum(VOICE_OPTIONS),
         notifications: z.boolean(),
+        mobileViewBehavior: z.enum(["reuse", "new"]),
         pluginCommands: z.string(),
         credentialPreference: z.enum(["auto", "apiKey", "subscription"]),
         shortcuts: shortcutsSchema,
@@ -133,6 +137,7 @@ export const rpcContract = defineRpcContract({
         model: z.enum(MODEL_OPTIONS).optional(),
         voice: z.enum(VOICE_OPTIONS).optional(),
         notifications: z.boolean().optional(),
+        mobileViewBehavior: z.enum(["reuse", "new"]).optional(),
         pluginCommands: z.string().max(2000).optional(),
         credentialPreference: z.enum(["auto", "apiKey", "subscription"]).optional(),
         shortcuts: shortcutsSchema.optional(),
@@ -143,6 +148,7 @@ export const rpcContract = defineRpcContract({
         model: z.enum(MODEL_OPTIONS),
         voice: z.enum(VOICE_OPTIONS),
         notifications: z.boolean(),
+        mobileViewBehavior: z.enum(["reuse", "new"]),
         pluginCommands: z.string(),
         credentialPreference: z.enum(["auto", "apiKey", "subscription"]),
         shortcuts: shortcutsSchema,
@@ -238,6 +244,17 @@ export const rpcContract = defineRpcContract({
       .strict(),
     output: z.object({ ok: z.literal(true) }).strict(),
   },
+  /** Resolve real thread metadata and the current opening preference. */
+  resolveThreadViews: {
+    input: z.object({ threadIds: z.array(z.string().min(1)).min(1).max(100) }).strict(),
+    output: z.object({
+      views: z.array(z.object({
+        kind: z.literal("thread"), id: z.string(), threadId: z.string(),
+        projectId: z.string().nullable(), title: z.string(),
+      }).strict()),
+      preference: z.enum(["reuse", "new"]),
+    }).strict(),
+  },
   /**
    * End a call authoritatively, without needing its owner realm to act — the
    * owner may be a frozen, backgrounded mobile webview that can no longer receive
@@ -306,7 +323,7 @@ export const rpcContract = defineRpcContract({
         onNewThreadScreen: z.boolean().optional(),
       })
       .strict(),
-    output: z.object({ output: z.string() }).strict(),
+    output: z.object({ output: z.string(), status: z.enum(["success", "error"]) }).strict(),
   },
 });
 
@@ -368,7 +385,7 @@ interface PluginCommandInfo {
   summary: string;
 }
 
-function toolSchemas(pluginCommands: PluginCommandInfo[] = []) {
+export function toolSchemas(pluginCommands: PluginCommandInfo[] = [], mobile = false) {
   const pluginTool =
     pluginCommands.length === 0
       ? []
@@ -396,7 +413,10 @@ function toolSchemas(pluginCommands: PluginCommandInfo[] = []) {
     { type: "function", name: "list_threads", description: "List recent bb threads (id, title, status). Optionally filter by project id.", parameters: { type: "object", properties: { project_id: { type: "string" }, limit: { type: "number", description: "Max threads to return (default 15)." } } } },
     { type: "function", name: "search_threads", description: "Full-text search bb threads by title/content. Returns matching thread ids and titles.", parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"] } },
     { type: "function", name: "read_thread", description: "Read a thread's details and its latest assistant output.", parameters: { type: "object", properties: { thread_id: { type: "string" } }, required: ["thread_id"] } },
-    { type: "function", name: "focus_thread", description: "Open/focus a thread in the user's bb app window.", parameters: { type: "object", properties: { thread_id: { type: "string" } }, required: ["thread_id"] } },
+    { type: "function", name: "focus_thread", description: mobile ? "Show a thread in the mobile drawer without leaving the call. Reopening a thread selects its existing view. disposition: auto uses the mobile preference, reuse replaces the active view, new keeps existing views." : "Open/focus a thread in the user's bb app window, navigating to that thread.", parameters: { type: "object", properties: { thread_id: { type: "string" }, ...(mobile ? { disposition: { type: "string", enum: ["auto", "reuse", "new"] } } : {}) }, required: ["thread_id"] } },
+    { type: "function", name: "focus_threads", description: "Show several threads in the mobile drawer switcher, preserving existing views. To show all running threads, first call list_live_threads and exclude recently-finished entries; pass their IDs here. Up to 100 per batch; split larger lists into batches.", parameters: { type: "object", properties: { thread_ids: { type: "array", items: { type: "string" }, minItems: 1, maxItems: 100 } }, required: ["thread_ids"] } },
+    { type: "function", name: "manage_views", description: "List, select, or close the views in the mobile drawer. Get view IDs using list. clear closes all views only when the user asks. Closing a view does not stop its thread or the call.", parameters: { type: "object", properties: { action: { type: "string", enum: ["list", "select", "close", "clear"] }, view_id: { type: "string" } }, required: ["action"] } },
+    { type: "function", name: "set_view_behavior", description: "Save how future mobile drawer opens behave. Use only when the user asks for a lasting mobile preference: reuse replaces the active view; new keeps views in the switcher. Desktop always navigates normally. Explicit mobile requests and batches override this preference.", parameters: { type: "object", properties: { behavior: { type: "string", enum: ["reuse", "new"] } }, required: ["behavior"] } },
     { type: "function", name: "set_pane", description: "Change a thread pane's presentation in the bb app: spotlight, clear-spotlight, maximize, restore, or toggle.", parameters: { type: "object", properties: { thread_id: { type: "string" }, action: { type: "string", enum: ["spotlight", "clear-spotlight", "maximize", "restore", "toggle"] } }, required: ["thread_id", "action"] } },
     { type: "function", name: "send_to_thread", description: "Send a message to a thread's agent. Starts a turn if idle, queues/steers if running.", parameters: { type: "object", properties: { thread_id: { type: "string" }, message: { type: "string" } }, required: ["thread_id", "message"] } },
     { type: "function", name: "start_thread", description: "Start a new agent thread in a project. Only pass prompt when the user dictated actual work; With no prompt, this opens bb's New thread screen for the user to type their own. Runs on the project's default machine unless machine_id is given — if the project lives on several connected machines and the user didn't say which, check list_machines and ask one short question instead of guessing.", parameters: { type: "object", properties: { project_id: { type: "string", description: "Project id; defaults to the user's current project." }, prompt: { type: "string", description: "The user's own instruction for the agent, verbatim. Omit if they didn't give one." }, title: { type: "string" }, machine_id: { type: "string", description: "Machine (host) id to run on, from list_machines. Omit to use the project's default machine." } } } },
@@ -408,7 +428,13 @@ function toolSchemas(pluginCommands: PluginCommandInfo[] = []) {
     // Handled locally in the bb app frontend, never reaches runTool:
     { type: "function", name: "set_composer_text", description: "Replace the text in the user's message composer (the box they type prompts into).", parameters: { type: "object", properties: { text: { type: "string" } }, required: ["text"] } },
     { type: "function", name: "append_composer_text", description: "Append text to the user's message composer.", parameters: { type: "object", properties: { text: { type: "string" } }, required: ["text"] } },
-  ];
+  ].filter(tool => mobile || !["focus_threads", "manage_views", "set_view_behavior"].includes(tool.name));
+}
+
+export function threadViewInstructions(mobile: boolean) {
+  return mobile
+    ? "Mobile thread views: focus_thread shows a thread in the drawer without navigating away from the call. disposition new preserves other views and reuse replaces the selected view. focus_threads opens a batch into the drawer switcher, not separate native bb tabs. For all running threads, use list_live_threads and exclude recently-finished entries. Use manage_views to list, select, or close mobile views. Use set_view_behavior only for an explicitly requested lasting mobile preference. Call get_context for the thread currently shown. If the drawer is unavailable, report the limitation; do not navigate away from the mobile call."
+    : "Desktop navigation: focus_thread opens and navigates to the requested thread, as usual, regardless of where the call started. There is no desktop companion-view mode in this version. Call get_context after navigation for the current thread. Mobile drawer preferences do not apply to desktop.";
 }
 
 const DEFAULT_PROMPT = `You are Aide, a concise voice operator for bb — the user's agentic IDE where coding agents run in threads inside projects.
@@ -483,6 +509,7 @@ export default async function plugin(bb: BbPluginApi) {
     model: RealtimeModel;
     voice: Voice;
     notifications: boolean;
+    mobileViewBehavior: "reuse" | "new";
     pluginCommands: string;
     credentialPreference: CredentialPreference;
     shortcuts: Shortcuts;
@@ -492,17 +519,19 @@ export default async function plugin(bb: BbPluginApi) {
     model: DEFAULT_MODEL,
     voice: DEFAULT_VOICE,
     notifications: true,
+    mobileViewBehavior: "reuse",
     pluginCommands: "all",
     credentialPreference: "auto",
     shortcuts: { ...DEFAULT_SHORTCUTS },
   };
   async function readConfig(): Promise<VoiceConfig> {
-    const stored = (await bb.storage.kv.get<Partial<VoiceConfig>>(CONFIG_KEY)) ?? {};
+    const stored = (await bb.storage.kv.get<Partial<VoiceConfig> & { viewBehavior?: string }>(CONFIG_KEY)) ?? {};
     return {
       model: isModel(stored.model) ? stored.model : CONFIG_DEFAULTS.model,
       voice: isVoice(stored.voice) ? stored.voice : CONFIG_DEFAULTS.voice,
       notifications:
         typeof stored.notifications === "boolean" ? stored.notifications : CONFIG_DEFAULTS.notifications,
+      mobileViewBehavior: (stored.mobileViewBehavior ?? stored.viewBehavior) === "new" ? "new" : "reuse",
       pluginCommands:
         typeof stored.pluginCommands === "string" ? stored.pluginCommands : CONFIG_DEFAULTS.pluginCommands,
       credentialPreference: isCredentialPreference(stored.credentialPreference)
@@ -897,14 +926,26 @@ export default async function plugin(bb: BbPluginApi) {
         const [described] = await withMachines([describeThread(thread)]);
         return JSON.stringify({ ...described, lastAssistantOutput: output ? truncate(output) : null });
       }
+      case "set_view_behavior": {
+        const behavior = str("behavior");
+        if (behavior !== "reuse" && behavior !== "new") throw new Error("Invalid view behavior.");
+        await writeConfig({ mobileViewBehavior: behavior });
+        bb.realtime.publish("config-changed", {});
+        return "Saved the mobile drawer preference. Desktop navigation is unchanged.";
+      }
+      case "focus_threads":
+      case "manage_views":
+        throw new Error("This tool requires an updated Handsfree frontend on the calling device.");
       case "focus_thread": {
         const { delivered } = await bb.sdk.threads.open({ threadId: str("thread_id"), file: null });
-        return delivered > 0 ? "Focused." : "No connected bb window received the action.";
+        if (delivered <= 0) throw new Error("No connected bb window received the action.");
+        return "Focused.";
       }
       case "set_pane": {
         const action = str("action") as "spotlight" | "clear-spotlight" | "maximize" | "restore" | "toggle";
         const { delivered } = await bb.sdk.threads.paneAction({ threadId: str("thread_id"), action });
-        return delivered > 0 ? `Pane ${action} applied.` : "No connected bb window received the action.";
+        if (delivered <= 0) throw new Error("No connected bb window received the action.");
+        return `Pane ${action} applied.`;
       }
       case "send_to_thread": {
         await bb.sdk.threads.send({
@@ -916,11 +957,11 @@ export default async function plugin(bb: BbPluginApi) {
       }
       case "start_thread": {
         const projectId = typeof args.project_id === "string" && args.project_id ? args.project_id : context.projectId;
-        if (!projectId) return "Error: no project_id given and no current project. Ask the user or call list_projects.";
+        if (!projectId) throw new Error("No project selected. Ask the user or call list_projects.");
         const prompt = typeof args.prompt === "string" && args.prompt.trim() ? args.prompt : undefined;
         // Promptless start_thread is handled in the frontend (opens the New
         // thread screen); reaching here without one means that path failed.
-        if (!prompt) return "No prompt given. Ask the user what the new thread should work on.";
+        if (!prompt) throw new Error("No prompt given. Ask the user what the new thread should work on.");
         const machineId =
           typeof args.machine_id === "string" && args.machine_id ? args.machine_id : null;
         const thread = await bb.sdk.threads.spawn({
@@ -951,7 +992,7 @@ export default async function plugin(bb: BbPluginApi) {
             : {
                 started,
                 focused: false,
-                note: "Started and running, but NOT brought on screen (that would drop the live call on this phone). Tell the user in one short sentence that it's running and they can tap it in the thread list.",
+                note: "Started and running, but not brought on screen. Call focus_thread with its ID if the user wants to see it beside the call.",
               },
         );
       }
@@ -972,7 +1013,7 @@ export default async function plugin(bb: BbPluginApi) {
         const available = await exposedPluginCommands();
         const command = available.find((c) => c.id === requested || c.name === requested);
         if (!command) {
-          return `Plugin "${requested}" is not available. Available plugins: ${available.map((c) => c.id).join(", ") || "none"}.`;
+          throw new Error(`Plugin "${requested}" is not available. Available plugins: ${available.map((c) => c.id).join(", ") || "none"}.`);
         }
         const argv = Array.isArray(args.argv)
           ? (args.argv as unknown[]).filter((v): v is string => typeof v === "string")
@@ -996,17 +1037,17 @@ export default async function plugin(bb: BbPluginApi) {
           error?: string;
         } | null;
         if (!response.ok || result === null) {
-          return `Error running bb ${command.name}: HTTP ${response.status}${result?.error ? ` — ${result.error}` : ""}`;
+          throw new Error(`Error running bb ${command.name}: HTTP ${response.status}${result?.error ? ` — ${result.error}` : ""}`);
         }
         const out = [result.stdout, result.stderr].filter(Boolean).join("\n").trim();
         if (result.exitCode !== 0) {
-          return truncate(`bb ${command.name} ${argv.join(" ")} failed (exit ${result.exitCode ?? "?"}):\n${out || "(no output)"}`);
+          throw new Error(truncate(`bb ${command.name} ${argv.join(" ")} failed (exit ${result.exitCode ?? "?"}):\n${out || "(no output)"}`));
         }
         return truncate(out || "(no output)");
       }
       case "update_instructions": {
         const content = str("instructions");
-        if (content.length > 20000) return "Error: instructions too long (max 20000 characters).";
+        if (content.length > 20000) throw new Error("Instructions too long (max 20000 characters).");
         savePromptVersion(content, "agent", str("reason"));
         return "Instructions updated. They apply from the next voice session.";
       }
@@ -1033,7 +1074,7 @@ export default async function plugin(bb: BbPluginApi) {
         return JSON.stringify({ shortstat: diff.shortstat, files: files.slice(0, 50) });
       }
       default:
-        return `Unknown tool: ${name}`;
+        throw new Error(`Unknown tool: ${name}`);
     }
   }
 
@@ -1136,7 +1177,7 @@ export default async function plugin(bb: BbPluginApi) {
   });
 
   bb.rpc.register(rpcContract, {
-    async createCall({ sdp, threadId, projectId, onNewThreadScreen, nonce }) {
+    async createCall({ sdp, threadId, projectId, onNewThreadScreen, nonce, mobile = false }) {
       const key = await apiKey();
       const { model, voice } = await readConfig();
       const pluginCommands = await exposedPluginCommands();
@@ -1147,7 +1188,7 @@ export default async function plugin(bb: BbPluginApi) {
       const session = {
         type: "realtime",
         model,
-        instructions: `${activePrompt()}${pluginSection}\n\nCurrent context: threadId=${threadId ?? "none"}, projectId=${projectId ?? "none"}${onNewThreadScreen ? " — the user is on the New thread screen (no thread exists yet; they're composing the prompt for one)" : ""}. Call get_context for fresh context — the user navigates while talking.`,
+        instructions: `${activePrompt()}${pluginSection}\n\n${threadViewInstructions(mobile)}\n\nCurrent context: threadId=${threadId ?? "none"}, projectId=${projectId ?? "none"}${onNewThreadScreen ? " — the user is on the New thread screen (no thread exists yet; they're composing the prompt for one)" : ""}. Call get_context for fresh context — the user navigates while talking.`,
         audio: {
           input: {
             noise_reduction: { type: "near_field" },
@@ -1164,7 +1205,7 @@ export default async function plugin(bb: BbPluginApi) {
           },
           output: { voice },
         },
-        tools: toolSchemas(pluginCommands),
+        tools: toolSchemas(pluginCommands, mobile),
       };
       const form = new FormData();
       form.set("sdp", sdp);
@@ -1267,22 +1308,14 @@ export default async function plugin(bb: BbPluginApi) {
       return { effective, preference, hasApiKey, envKeyPresent, subscriptionAvailable };
     },
     async logEvent({ sessionId, kind, payload }) {
-      db.prepare(
+      const ts = Date.now();
+      const result = db.prepare(
         "INSERT INTO session_events (session_id, ts, kind, payload) VALUES (?, ?, ?, ?)",
-      ).run(sessionId, Date.now(), kind, JSON.stringify(payload));
-      // Mirror audio/mic lifecycle diagnostics to the plugin log so `bb plugin
-      // logs handsfree` surfaces mic/speaker/backgrounding problems (HF-2)
-      // without opening the DB.
-      if (
-        kind.startsWith("audio.") ||
-        kind.startsWith("mic.") ||
-        kind.startsWith("page.") ||
-        kind.startsWith("client.")
-      ) {
-        const detail = JSON.stringify(payload);
-        if (kind.endsWith(".failed")) bb.log.error(`${kind} ${detail}`);
-        else bb.log.info(`${kind} ${detail}`);
-      }
+      ).run(sessionId, ts, kind, JSON.stringify(payload));
+      // Both views describe this exact persisted event, including client/session
+      // and tool call identity. Client-handled tools must be visible here too.
+      const entry = sessionEventLog({ id: Number(result.lastInsertRowid), ts, sessionId, kind, payload });
+      bb.log[entry.level](entry.message);
       bb.realtime.publish("aide-log", { sessionId });
       return { ok: true as const };
     },
@@ -1297,6 +1330,19 @@ export default async function plugin(bb: BbPluginApi) {
     async sendVoiceCommand({ nonce, action, client, realm }) {
       bb.realtime.publish("voice-command", { nonce, action, client, realm });
       return { ok: true as const };
+    },
+    async resolveThreadViews({ threadIds }) {
+      const views: { kind: "thread"; id: string; threadId: string; projectId: string | null; title: string }[] = [];
+      const ids = [...new Set(threadIds)];
+      // Bound backend concurrency; resolve everything before changing the UI.
+      for (let i = 0; i < ids.length; i += 8) {
+        views.push(...await Promise.all(ids.slice(i, i + 8).map(async threadId => {
+          const thread = await bb.sdk.threads.get({ threadId });
+          return { kind: "thread" as const, id: `thread:${threadId}`, threadId,
+            projectId: thread.projectId, title: thread.title || thread.titleFallback || threadId };
+        })));
+      }
+      return { views, preference: (await readConfig()).mobileViewBehavior };
     },
     async forceStop({ nonce }) {
       // Durable end-marker so listSessions stops showing it live even if the
@@ -1330,7 +1376,15 @@ export default async function plugin(bb: BbPluginApi) {
         "SELECT payload FROM session_events WHERE session_id = ? AND kind IN ('user', 'assistant') ORDER BY (kind = 'assistant'), ts, id LIMIT 1",
       );
       const errorStmt = db.prepare(
-        "SELECT 1 FROM session_events WHERE session_id = ? AND kind = 'error' LIMIT 1",
+        `SELECT 1 FROM session_events WHERE session_id = ? AND (
+          kind = 'error' OR (kind = 'tool.result' AND (
+            json_extract(payload, '$.status') = 'error' OR
+            (json_extract(payload, '$.status') IS NULL AND (
+              json_extract(payload, '$.output') LIKE 'Tool error%' OR
+              json_extract(payload, '$.output') LIKE 'Error:%'
+            ))
+          ))
+        ) LIMIT 1`,
       );
       const deviceStmt = db.prepare(
         "SELECT payload FROM session_events WHERE session_id = ? AND kind = 'session.started' ORDER BY ts LIMIT 1",
@@ -1414,14 +1468,12 @@ export default async function plugin(bb: BbPluginApi) {
       return { ok: true as const };
     },
     async runTool({ name, args, threadId, projectId, onNewThreadScreen }) {
-      bb.log.info(`voice tool: ${name} ${JSON.stringify(args).slice(0, 300)}`);
       try {
         const output = await runTool(name, args, { threadId, projectId, onNewThreadScreen });
-        return { output };
+        return { output, status: "success" as const };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        bb.log.warn(`voice tool ${name} failed: ${message}`);
-        return { output: `Tool error: ${message}` };
+        return { output: `Tool error: ${message}`, status: "error" as const };
       }
     },
   });

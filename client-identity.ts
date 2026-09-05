@@ -83,13 +83,20 @@ function detectDisplayMode(): string {
   return "browser";
 }
 
+/** Include iPads using desktop Safari's user agent in mobile call routing. */
+export function isMobileClient(ua: string, uaMobile = false, maxTouchPoints = 0): boolean {
+  return uaMobile || /\b(iPhone|iPad|iPod|Android)\b|Mobile/.test(ua) ||
+    (/Macintosh/.test(ua) && maxTouchPoints > 1);
+}
+
 function describeClient(): ClientDescriptor {
   const nav = typeof navigator !== "undefined" ? navigator : undefined;
   const ua = nav?.userAgent ?? "";
   const uaData = (nav as { userAgentData?: { platform?: string; mobile?: boolean; brands?: { brand: string }[] } } | undefined)
     ?.userAgentData;
 
-  const platform =
+  const desktopIPad = /Macintosh/.test(ua) && (nav?.maxTouchPoints ?? 0) > 1;
+  const platform = desktopIPad ? "iOS" :
     uaData?.platform ||
     (/\b(iPhone|iPad|iPod)\b/.test(ua)
       ? "iOS"
@@ -103,7 +110,7 @@ function describeClient(): ClientDescriptor {
               ? "Linux"
               : "");
 
-  const mobile = uaData?.mobile ?? /\b(Mobi|iPhone|iPod|Android)\b/.test(ua);
+  const mobile = isMobileClient(ua, uaData?.mobile, nav?.maxTouchPoints);
 
   const brand = uaData?.brands?.map((b) => b.brand).find((b) => b && !/Not.?A.?Brand/i.test(b));
   const browser =

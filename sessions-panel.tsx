@@ -6,14 +6,19 @@
 // (which collapses on mobile) or switch sidebars to talk.
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import {
+  experimental_useAppPanel,
   experimental_useSidebarThreadActions,
   useBbContext,
   useRealtime,
   useRpc,
 } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "./server";
+import { clientDescriptor } from "./client-identity";
 import { voiceAgent } from "./voice-agent";
-import { MicIcon, StopIcon, WaveformIcon, useCallElapsed } from "./voice-chrome";
+import { LiveCallControls, MicIcon, WaveformIcon } from "./voice-chrome";
+import { viewWorkspace } from "./view-workspace";
+import { actionStatus, pairToolEvents } from "./session-events";
+import { COMPANION_TAB } from "./companion";
 import { cn } from "@/lib/utils";
 
 interface DeviceInfo {
@@ -139,10 +144,7 @@ function GearIcon() {
  */
 function CallConsole({ onViewTranscript, selectedId }: { onViewTranscript: (sessionId: string) => void; selectedId: string | null }) {
   const state = useSyncExternalStore(voiceAgent.subscribe, voiceAgent.getState);
-  const activity = useSyncExternalStore(voiceAgent.subscribe, voiceAgent.getActivity);
-  const micSuspended = useSyncExternalStore(voiceAgent.subscribe, voiceAgent.getMicSuspended);
   const lastActivity = useSyncExternalStore(voiceAgent.subscribe, voiceAgent.getLastActivity);
-  const elapsed = useCallElapsed();
   const live = state === "live";
   const muted = state === "muted";
   const active = live || muted;
@@ -166,24 +168,6 @@ function CallConsole({ onViewTranscript, selectedId }: { onViewTranscript: (sess
     );
   }
 
-  const speaking = activity === "aide";
-  const listening = activity === "you";
-  const activityColor = micSuspended
-    ? "text-destructive" // uplink down (iOS backgrounded the mic)
-    : speaking
-      ? "text-[color:var(--success,#6faf76)]" // Aide
-      : listening
-        ? "text-foreground" // you
-        : "text-muted-foreground/70";
-  const label = micSuspended
-    ? "Mic paused"
-    : speaking
-      ? "Aide speaking…"
-      : listening
-        ? "Listening…"
-        : muted
-          ? "Muted"
-          : "Connected";
   const liveId = voiceAgent.getSessionId();
   const ticker = tickerFor(lastActivity);
   // When you're already reading the live transcript, the ticker (and the pill's
@@ -210,40 +194,7 @@ function CallConsole({ onViewTranscript, selectedId }: { onViewTranscript: (sess
           </svg>
         </button>
       ) : null}
-      <div className="flex h-11 max-w-full items-center overflow-hidden rounded-full border border-border bg-card shadow-lg">
-      <button
-          type="button"
-          aria-label={muted ? "Unmute Aide microphone" : "Mute Aide microphone"}
-          title={muted ? "Unmute" : "Mute"}
-          onClick={() => voiceAgent.toggleMuteFromSurface()}
-          className={cn(
-            "flex size-11 shrink-0 items-center justify-center transition-colors",
-            muted
-              ? "text-destructive hover:bg-destructive/15"
-              : "text-muted-foreground hover:bg-accent hover:text-foreground",
-          )}
-        >
-          <MicIcon slashed={muted} />
-        </button>
-        <span className="h-5 w-px bg-border" />
-        <span className="flex min-w-0 items-center gap-2 px-3">
-          <span className={cn("flex shrink-0 items-center", activityColor)} title={label} aria-label={label}>
-            <WaveformIcon live={speaking || listening} />
-          </span>
-          <span className="truncate text-sm text-foreground">{label}</span>
-          <span className="shrink-0 tabular-nums text-xs text-muted-foreground">{elapsed ?? ""}</span>
-        </span>
-        <span className="h-5 w-px bg-border" />
-        <button
-          type="button"
-          aria-label="Stop Aide voice session"
-          title="Stop"
-          onClick={() => voiceAgent.stopFromSurface()}
-          className="flex size-11 shrink-0 items-center justify-center text-muted-foreground transition-colors hover:bg-destructive/15 hover:text-destructive"
-        >
-          <StopIcon />
-        </button>
-      </div>
+      <LiveCallControls />
     </div>
   );
 }
@@ -266,7 +217,10 @@ const ACTIONS: Record<string, { family: ActionFamily; verb: string }> = {
   list_threads: { family: "inspect", verb: "Listed threads" },
   search_threads: { family: "inspect", verb: "Searched threads" },
   read_thread: { family: "inspect", verb: "Read a thread" },
-  focus_thread: { family: "navigate", verb: "Focused a thread" },
+  focus_thread: { family: "navigate", verb: "Showed a thread" },
+  focus_threads: { family: "navigate", verb: "Showed threads" },
+  manage_views: { family: "navigate", verb: "Updated views" },
+  set_view_behavior: { family: "self", verb: "Changed thread-opening preference" },
   set_pane: { family: "navigate", verb: "Changed the layout" },
   show_diff: { family: "navigate", verb: "Opened a diff" },
   send_to_thread: { family: "mutate", verb: "Sent a message" },
@@ -342,7 +296,7 @@ function Chevron() {
 
 type Row =
   | { kind: "speech"; id: number; ts: number; who: "you" | "aide"; text: string }
-  | { kind: "action"; id: number; ts: number; name: string; args: Record<string, unknown>; output: string | null }
+  | { kind: "action"; id: number; ts: number; name: string; args: Record<string, unknown>; output: string | null; status?: "success" | "error"; label?: string }
   | { kind: "notice"; id: number; ts: number; text: string }
   | { kind: "error"; id: number; ts: number; message: string }
   | { kind: "sysgroup"; id: number; ts: number; events: EventRow[] };
@@ -357,14 +311,15 @@ const CONVERSATION_KINDS = new Set(["user", "assistant", "tool.call", "tool.resu
  */
 function buildRows(events: EventRow[]): Row[] {
   const rows: Row[] = [];
-  const consumed = new Set<number>();
+  const pairs = pairToolEvents(events);
+  const pairedResults = new Set([...pairs.values()].map(result => result.id));
   let diagnostics: EventRow[] = [];
   const flush = () => {
     if (diagnostics.length === 0) return;
     rows.push({ kind: "sysgroup", id: diagnostics[0].id, ts: diagnostics[0].ts, events: diagnostics });
     diagnostics = [];
   };
-  events.forEach((event, index) => {
+  events.forEach((event) => {
     if (!CONVERSATION_KINDS.has(event.kind)) {
       diagnostics.push(event);
       return;
@@ -378,23 +333,16 @@ function buildRows(events: EventRow[]): Row[] {
         break;
       case "tool.call": {
         const name = String(payload.name ?? "?");
-        let output: string | null = null;
-        for (let j = index + 1; j < events.length; j++) {
-          const later = events[j];
-          if (later.kind !== "tool.result" || consumed.has(later.id)) continue;
-          const lp = parsePayload(later.payload);
-          if (String(lp.name ?? "?") === name) {
-            output = String(lp.output ?? "");
-            consumed.add(later.id);
-            break;
-          }
-        }
-        rows.push({ kind: "action", id: event.id, ts: event.ts, name, args: (payload.args as Record<string, unknown>) ?? {}, output });
+        const result = pairs.get(event.id)?.payload;
+        const output = result ? String(result.output ?? "") : null;
+        const status = result ? actionStatus(result) : undefined;
+        const label = typeof result?.label === "string" ? result.label : undefined;
+        rows.push({ kind: "action", id: event.id, ts: event.ts, name, args: (payload.args as Record<string, unknown>) ?? {}, output, status, label });
         break;
       }
       case "tool.result":
-        if (consumed.has(event.id)) break; // already merged into its call
-        rows.push({ kind: "action", id: event.id, ts: event.ts, name: String(payload.name ?? "?"), args: {}, output: String(payload.output ?? "") });
+        if (pairedResults.has(event.id)) break; // already merged into its call
+        rows.push({ kind: "action", id: event.id, ts: event.ts, name: String(payload.name ?? "?"), args: {}, output: String(payload.output ?? ""), status: actionStatus(payload), label: typeof payload.label === "string" ? payload.label : undefined });
         break;
       case "notice":
         rows.push({ kind: "notice", id: event.id, ts: event.ts, text: String(payload.text ?? "") });
@@ -438,15 +386,15 @@ function SpeechRow({ row }: { row: Extract<Row, { kind: "speech" }> }) {
 function ActionRow({ row, plugins }: { row: Extract<Row, { kind: "action" }>; plugins: Map<string, PluginMeta> }) {
   const meta = actionMeta(row.name);
   const pending = row.output === null;
-  const isError = !pending && /^tool error/i.test(row.output ?? "");
+  const isError = !pending && row.status === "error";
   const hasArgs = Object.keys(row.args).length > 0;
 
   // run_plugin_command reads as "Used plugin [chip]": the left square keeps the
   // generic plugin glyph (consistent with every action row), and the plugin's
   // real name + icon (from listPlugins) ride in a chip next to it.
   const isPlugin = row.name === "run_plugin_command";
-  let verb = meta.verb;
-  let object = actionObject(row.name, row.args);
+  let verb = pending ? "Working…" : isError ? "Couldn’t complete action" : row.label ?? meta.verb;
+  let object = row.label ? "" : actionObject(row.name, row.args);
   let pluginName = "";
   let pluginIcon: string | null = null;
   if (isPlugin) {
@@ -540,7 +488,7 @@ const FILTERS: { id: TranscriptFilter; label: string }[] = [
 ];
 
 function rowMatchesFilter(row: Row, filter: TranscriptFilter): boolean {
-  const actionErrored = row.kind === "action" && row.output !== null && /^tool error/i.test(row.output);
+  const actionErrored = row.kind === "action" && row.status === "error";
   switch (filter) {
     case "talk":
       return row.kind === "speech" || row.kind === "notice";
@@ -630,6 +578,7 @@ export function SessionsPanel() {
   const rpc = useRpc<typeof rpcContract>();
   const { threadId, projectId } = useBbContext();
   const sidebarActions = experimental_useSidebarThreadActions();
+  const appPanel = experimental_useAppPanel();
   useEscapeToClose();
 
   // The Handsfree page has no composer, so nothing else binds the voice agent
@@ -641,7 +590,7 @@ export function SessionsPanel() {
   // back. Everything else (thread focus, starting work, diffs) runs through rpc,
   // which works from anywhere.
   useEffect(() => {
-    voiceAgent.bindFallback({
+    return voiceAgent.bindFallback({
       rpc,
       context: { threadId: threadId ?? null, projectId: projectId ?? null, onNewThreadScreen: false },
       openNewThread: (targetProjectId) =>
@@ -651,6 +600,11 @@ export function SessionsPanel() {
         }),
     });
   }, [rpc, threadId, projectId, sidebarActions]);
+
+  useEffect(() => viewWorkspace.registerPresenter({
+    available: () => clientDescriptor.mobile && document.visibilityState !== "hidden",
+    reveal: () => appPanel.openFixedTab({ surface: { kind: "current" }, tab: COMPANION_TAB }),
+  }), [appPanel]);
   const [sessions, setSessions] = useState<SessionRow[] | null>(null);
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);

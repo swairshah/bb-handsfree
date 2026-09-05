@@ -5,11 +5,12 @@
 // and audio playback happen right here in the bb app); the backend performs
 // the SDP exchange (it holds the API key) and executes bb tools via bb.sdk.
 // The session itself lives in voice-agent.ts and outlives any component.
-import { useEffect, useSyncExternalStore } from "react";
+import { useEffect, useRef, useSyncExternalStore } from "react";
 import {
   definePluginApp,
   experimental_useSidebarThreadActions,
   useBbContext,
+  useBbNavigate,
   useComposer,
   useComposerView,
   useRealtime,
@@ -17,8 +18,11 @@ import {
 } from "@get-bb/plugin-sdk/app";
 import type { PluginThreadListProps } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "./server";
+import { clientDescriptor } from "./client-identity";
 import { voiceAgent } from "./voice-agent";
 import { SessionsPanel } from "./sessions-panel";
+import { viewWorkspace } from "./view-workspace";
+import { COMPANION_TAB, CompanionTab, THREAD_WORKSPACE_ACTION } from "./companion";
 import { AudioSettings, BehaviorSettings, ModelsSettings, ShortcutsSettings } from "./settings-sections";
 import { cn } from "@/lib/utils";
 import { AUDIO_DEVICE_STORAGE_KEY } from "./audio-devices";
@@ -38,7 +42,20 @@ function AideVoiceButton() {
   const onNewThreadScreen = scope.kind === "new-thread";
   const scopeProjectId =
     scope.kind === "new-thread" || scope.kind === "side-chat" ? scope.projectId : null;
-  const effectiveProjectId = projectId ?? scopeProjectId;
+  const effectiveThreadId = scope.kind === "thread" ? scope.threadId : threadId;
+  const views = useSyncExternalStore(viewWorkspace.subscribe, viewWorkspace.get);
+  const shownThread = views.views.find(view => view.threadId === effectiveThreadId);
+  const effectiveProjectId = shownThread?.projectId ?? (effectiveThreadId === threadId ? projectId : null) ?? scopeProjectId;
+  const navigate = useBbNavigate();
+  const surface = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    if (!clientDescriptor.mobile || scope.kind !== "thread" || scope.threadId !== threadId) return;
+    return viewWorkspace.registerPresenter({
+      available: () => document.visibilityState !== "hidden" && !!surface.current &&
+        !surface.current.closest("[data-handsfree-workspace]"),
+      reveal: () => navigate.openThreadPanel({ actionId: THREAD_WORKSPACE_ACTION, title: "Views", params: {} }),
+    });
+  }, [navigate, scope.kind, effectiveThreadId, threadId]);
   const sidebarActions = experimental_useSidebarThreadActions();
   const state = useSyncExternalStore(voiceAgent.subscribe, voiceAgent.getState);
   const activity = useSyncExternalStore(voiceAgent.subscribe, voiceAgent.getActivity);
@@ -94,9 +111,9 @@ function AideVoiceButton() {
   // new composer's button mounts and rebinds, so "this thread" and composer
   // edits follow the user while the call keeps running.
   useEffect(() => {
-    voiceAgent.bind({
+    return voiceAgent.bind({
       rpc,
-      context: { threadId, projectId: effectiveProjectId, onNewThreadScreen },
+      context: { threadId: effectiveThreadId, projectId: effectiveProjectId, onNewThreadScreen },
       composer: {
         setText: (text) => composer.setText(text),
         updateText: (updater) => composer.updateText(updater),
@@ -107,7 +124,7 @@ function AideVoiceButton() {
           focusPrompt: true,
         }),
     });
-  }, [rpc, composer, threadId, effectiveProjectId, onNewThreadScreen, sidebarActions]);
+  }, [rpc, composer, effectiveThreadId, effectiveProjectId, onNewThreadScreen, sidebarActions]);
 
   const live = state === "live";
   const muted = state === "muted";
@@ -186,7 +203,7 @@ function AideVoiceButton() {
   }
 
   return (
-    <button
+    <button ref={node => { surface.current = node; }}
       type="button"
       aria-label="Start Aide voice agent"
       title={`Talk to Aide (${toggleHint})`}
@@ -353,6 +370,14 @@ export default definePluginApp((app) => {
     id: "aide-voice",
     actions: [{ id: "voice-agent", component: AideVoiceButton }],
   });
+  if (clientDescriptor.mobile) app.slots.threadPanelAction({
+    id: THREAD_WORKSPACE_ACTION,
+    title: "Handsfree mobile views",
+    icon: "PanelRight",
+    layout: "flush",
+    component: CompanionTab,
+    run: context => { context.openPanel({ title: "Views", params: {} }); },
+  });
   app.slots.navPanel({
     id: "sessions",
     title: "Handsfree",
@@ -360,6 +385,17 @@ export default definePluginApp((app) => {
     path: "sessions",
     component: SessionsPanel,
     experimental_sidebarAccessory: SidebarLiveIndicator,
+    // Registration is collected in each client: desktop keeps its original
+    // panel chrome, while mobile gains a call-safe drawer view.
+    fixedTabs: clientDescriptor.mobile ? [
+      {
+        ...COMPANION_TAB,
+        title: "Views",
+        icon: "PanelRight",
+        component: CompanionTab,
+        layout: "flush",
+      },
+    ] : [],
   });
   // --- Global surface trial: multiple always-reachable triggers for the same
   // singleton call. All are pure toggles; the composer button owns the binding.
