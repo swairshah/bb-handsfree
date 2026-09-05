@@ -120,15 +120,6 @@ function SettingRow({ id, label, hint, children }: {
   );
 }
 
-function RefreshIcon() {
-  return (
-    <svg viewBox="0 0 16 16" className="size-4" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-      <path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9" />
-      <path d="M13.7 2.5V5H11.2" />
-    </svg>
-  );
-}
-
 const settingsCardClass = "rounded-lg border border-border bg-muted/20 p-4";
 
 /**
@@ -868,7 +859,7 @@ export function AudioSettings() {
             value={preferences.inputDeviceId}
             disabled={loading}
             onChange={(event) => change(event.target.value)}
-            className={selectClass}
+            className={cn(selectClass, "min-w-0")}
           >
             <option value="">System default</option>
             {savedMicMissing ? (
@@ -884,32 +875,27 @@ export function AudioSettings() {
               </option>
             ))}
           </select>
-          <button
-            type="button"
-            onClick={() => void refresh()}
-            aria-label="Refresh devices"
-            title="Refresh devices"
-            className="flex size-9 shrink-0 items-center justify-center rounded-md border border-border text-muted-foreground hover:bg-state-hover hover:text-foreground"
-          >
-            <RefreshIcon />
-          </button>
-        </SettingRow>
-
-        <div className="flex items-center gap-2">
           <Button
             type="button"
             variant={testing ? "secondary" : "outline"}
             size="sm"
+            className="shrink-0"
+            aria-label={testing ? "Stop microphone test" : "Test microphone"}
             onClick={() => setTesting((prev) => !prev)}
           >
-            {testing ? "Stop test" : "Test microphone"}
+            {testing ? "Stop" : "Test"}
           </Button>
-          {labelsHidden ? (
-            <Button type="button" variant="outline" size="sm" onClick={() => void allowAccess()}>
-              Allow access
-            </Button>
-          ) : null}
-        </div>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="shrink-0"
+            aria-label="Refresh microphone devices"
+            onClick={() => void refresh()}
+          >
+            Refresh
+          </Button>
+        </SettingRow>
 
         {testing ? (
           <div className="rounded-md border border-border bg-muted/30 px-3 py-2">
@@ -919,7 +905,7 @@ export function AudioSettings() {
         ) : null}
 
         {labelsHidden ? (
-          <p className="text-xs text-muted-foreground">Allow mic access to see device names and test it.</p>
+          <p className="text-xs text-muted-foreground"><button type="button" className={cn(linkClass, "underline")} onClick={() => void allowAccess()}>Allow access</button> to see microphone names.</p>
         ) : savedMicMissing ? (
           <p className="text-xs text-muted-foreground">This mic isn't connected, so Aide falls back to your default.</p>
         ) : null}
