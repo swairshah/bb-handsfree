@@ -306,8 +306,7 @@ export function ModelsSettings() {
 }
 
 // ---------------------------------------------------------------------------
-// Behavior: the prompt (how Aide acts), thread announcements, and which
-// plugins it may use.
+// Behavior: instructions, opening defaults, announcements, and plugin access.
 // ---------------------------------------------------------------------------
 
 export function BehaviorSettings() {
@@ -330,6 +329,40 @@ export function BehaviorSettings() {
   return (
     <div className={cn(settingsCardClass, "space-y-5")}>
       <PromptEditor />
+
+      <Group label="Default behavior" hint="Choose where Aide opens threads on desktop.">
+        {([
+          ["desktopComposerDestination", "From the composer"],
+          ["desktopAideDestination", "From the Aide page"],
+        ] as const).map(([key, label]) => (
+          <label key={key} className="block space-y-1 text-sm">
+            <span>{label}</span>
+            <select className={selectClass} disabled={loading} value={config?.[key] ?? DESKTOP_DEFAULTS[key]}
+              onChange={event => void update({ [key]: event.target.value as "navigate" | "panel" })}>
+              <option value="navigate">Open in the main view</option>
+              <option value="panel">Open in the side panel</option>
+            </select>
+          </label>
+        ))}
+        <label className="block space-y-1 text-sm">
+          <span>In the side panel</span>
+          <select className={selectClass} disabled={loading} value={config?.desktopTabBehavior ?? "new"}
+            onChange={event => void update({ desktopTabBehavior: event.target.value as "reuse" | "new" })}>
+            <option value="new">Open a new tab</option>
+            <option value="reuse">Reuse the preview tab</option>
+          </select>
+        </label>
+        <p className="text-xs text-muted-foreground">You can ask Aide to open somewhere else. The Aide page has one thread view.</p>
+      </Group>
+
+      <Group label="On mobile" hint="Threads open in the drawer so you can keep talking.">
+        <label htmlFor="handsfree-view-behavior" className="mb-2 block text-sm">When opening another thread</label>
+        <select id="handsfree-view-behavior" className={selectClass} disabled={loading} value={config?.mobileViewBehavior ?? "reuse"}
+          onChange={event => void update({ mobileViewBehavior: event.target.value as VoiceConfig["mobileViewBehavior"] })}>
+          <option value="reuse">Replace the current view</option>
+          <option value="new">Keep both views</option>
+        </select>
+      </Group>
 
       <Group label="Announcements">
         <label className="flex items-center justify-between gap-3">
@@ -377,49 +410,6 @@ export function BehaviorSettings() {
           />
         ) : null}
         <BuiltInToolsLink />
-      </Group>
-    </div>
-  );
-}
-
-export function ThreadOpeningSettings() {
-  const { config, update } = useVoiceConfig();
-  const loading = config === null;
-
-  return (
-    <div className={cn(settingsCardClass, "space-y-5")}>
-      <Group label="Desktop thread opening" hint="Defaults follow where you started the call, even after moving between pages. You can override them for one action by voice.">
-        {([
-          ["desktopComposerDestination", "Calls started from a composer"],
-          ["desktopAideDestination", "Calls started from the Aide page"],
-        ] as const).map(([key, label]) => (
-          <label key={key} className="block space-y-1 text-sm">
-            <span>{label}</span>
-            <select className={selectClass} disabled={loading} value={config?.[key] ?? DESKTOP_DEFAULTS[key]}
-              onChange={event => void update({ [key]: event.target.value as "navigate" | "panel" })}>
-              <option value="navigate">Navigate to the thread</option>
-              <option value="panel">Show in the side panel</option>
-            </select>
-          </label>
-        ))}
-        <label className="block space-y-1 text-sm">
-          <span>Thread-page side panels</span>
-          <select className={selectClass} disabled={loading} value={config?.desktopTabBehavior ?? "new"}
-            onChange={event => void update({ desktopTabBehavior: event.target.value as "reuse" | "new" })}>
-            <option value="new">Keep each thread in a separate tab</option>
-            <option value="reuse">Replace the preview thread</option>
-          </select>
-        </label>
-        <p className="text-xs text-muted-foreground">The Aide page shows one side-panel thread. Multiple tabs are available from existing thread pages. Sidebar and keyboard starts default to navigation.</p>
-      </Group>
-
-      <Group label="Mobile thread drawer" hint="On mobile, show threads without leaving the call. Desktop preferences do not affect the drawer.">
-        <label htmlFor="handsfree-view-behavior" className="mb-2 block text-sm">When showing a thread on mobile</label>
-        <select id="handsfree-view-behavior" className={selectClass} disabled={loading} value={config?.mobileViewBehavior ?? "reuse"}
-          onChange={event => void update({ mobileViewBehavior: event.target.value as VoiceConfig["mobileViewBehavior"] })}>
-          <option value="reuse">Replace the shown thread</option>
-          <option value="new">Keep threads in the drawer switcher</option>
-        </select>
       </Group>
     </div>
   );
