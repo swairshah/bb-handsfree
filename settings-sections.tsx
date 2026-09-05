@@ -104,7 +104,21 @@ function voiceLabel(voice: Voice): string {
 }
 
 const selectClass =
-  "block w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm text-foreground disabled:opacity-60";
+  "block w-56 max-w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm text-foreground disabled:opacity-60";
+
+function SettingRow({ id, label, hint, children }: {
+  id: string; label: string; hint?: string; children: ReactNode;
+}) {
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2">
+      <div className="min-w-0 flex-1 basis-40">
+        <label htmlFor={id} className="block text-sm font-medium text-foreground">{label}</label>
+        {hint ? <p className="mt-1 text-xs text-muted-foreground">{hint}</p> : null}
+      </div>
+      <div className="ml-auto flex max-w-full items-center gap-2">{children}</div>
+    </div>
+  );
+}
 
 function RefreshIcon() {
   return (
@@ -207,15 +221,16 @@ function CredentialCard() {
   if (canChoose) {
     return (
       <div className="space-y-1.5">
-        <span className="text-sm font-medium text-foreground">Credential</span>
-        <select
-          value={chooserValue}
-          onChange={(event) => void choose(event.target.value as "apiKey" | "subscription")}
-          className={selectClass}
-        >
-          <option value="subscription">ChatGPT subscription</option>
-          <option value="apiKey">OpenAI API key</option>
-        </select>
+        <SettingRow id="handsfree-credential" label="Credential">
+          <select id="handsfree-credential"
+            value={chooserValue}
+            onChange={(event) => void choose(event.target.value as "apiKey" | "subscription")}
+            className={selectClass}
+          >
+            <option value="subscription">ChatGPT subscription</option>
+            <option value="apiKey">OpenAI API key</option>
+          </select>
+        </SettingRow>
         <div>
           <Button type="button" variant="outline" size="sm" onClick={() => void removeKey()}>
             Remove API key
@@ -265,9 +280,8 @@ export function ModelsSettings() {
   return (
     <div className={cn(settingsCardClass, "space-y-4")}>
       <CredentialCard />
-      <label className="block space-y-1">
-        <span className="text-sm font-medium text-foreground">Model</span>
-        <select
+      <SettingRow id="handsfree-model" label="Model">
+        <select id="handsfree-model"
           value={model}
           disabled={loading}
           onChange={(event) => {
@@ -282,10 +296,9 @@ export function ModelsSettings() {
             </option>
           ))}
         </select>
-      </label>
-      <label className="block space-y-1">
-        <span className="text-sm font-medium text-foreground">Voice</span>
-        <select
+      </SettingRow>
+      <SettingRow id="handsfree-voice" label="Voice">
+        <select id="handsfree-voice"
           value={voice}
           disabled={loading}
           onChange={(event) => {
@@ -300,13 +313,13 @@ export function ModelsSettings() {
             </option>
           ))}
         </select>
-      </label>
+      </SettingRow>
     </div>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Behavior: instructions, opening defaults, announcements, and plugin access.
+// Behavior: instructions, announcements, and plugin access.
 // ---------------------------------------------------------------------------
 
 export function BehaviorSettings() {
@@ -330,40 +343,6 @@ export function BehaviorSettings() {
     <div className={cn(settingsCardClass, "space-y-5")}>
       <PromptEditor />
 
-      <Group label="Default behavior" hint="Choose where Aide opens threads on desktop.">
-        {([
-          ["desktopComposerDestination", "From the composer"],
-          ["desktopAideDestination", "From the Aide page"],
-        ] as const).map(([key, label]) => (
-          <label key={key} className="block space-y-1 text-sm">
-            <span>{label}</span>
-            <select className={selectClass} disabled={loading} value={config?.[key] ?? DESKTOP_DEFAULTS[key]}
-              onChange={event => void update({ [key]: event.target.value as "navigate" | "panel" })}>
-              <option value="navigate">Open in the main view</option>
-              <option value="panel">Open in the side panel</option>
-            </select>
-          </label>
-        ))}
-        <label className="block space-y-1 text-sm">
-          <span>In the side panel</span>
-          <select className={selectClass} disabled={loading} value={config?.desktopTabBehavior ?? "new"}
-            onChange={event => void update({ desktopTabBehavior: event.target.value as "reuse" | "new" })}>
-            <option value="new">Open a new tab</option>
-            <option value="reuse">Reuse the preview tab</option>
-          </select>
-        </label>
-        <p className="text-xs text-muted-foreground">You can ask Aide to open somewhere else. The Aide page has one thread view.</p>
-      </Group>
-
-      <Group label="On mobile" hint="Threads open in the drawer so you can keep talking.">
-        <label htmlFor="handsfree-view-behavior" className="mb-2 block text-sm">When opening another thread</label>
-        <select id="handsfree-view-behavior" className={selectClass} disabled={loading} value={config?.mobileViewBehavior ?? "reuse"}
-          onChange={event => void update({ mobileViewBehavior: event.target.value as VoiceConfig["mobileViewBehavior"] })}>
-          <option value="reuse">Replace the current view</option>
-          <option value="new">Keep both views</option>
-        </select>
-      </Group>
-
       <Group label="Announcements">
         <label className="flex items-center justify-between gap-3">
           <span className="text-sm text-foreground">When a thread finishes or fails</span>
@@ -377,31 +356,33 @@ export function BehaviorSettings() {
         </label>
       </Group>
 
-      <Group label="Plugins" hint="Aide always has its built-in tools for driving bb by voice; plugins let it also run your other installed plugins.">
-        <select
-          value={showCustom ? "custom" : exposure}
-          disabled={loading}
-          onChange={(event) => {
-            const next = event.target.value;
-            if (next === "all") {
-              setCustomMode(false);
-              void update({ pluginCommands: "all" });
-            } else if (next === "none") {
-              setCustomMode(false);
-              void update({ pluginCommands: "none" });
-            } else {
-              // Entering custom: start from a clean slate unless a real list
-              // was already saved, then let the picker turn plugins on.
-              setCustomMode(true);
-              if (exposure !== "custom") void update({ pluginCommands: "none" });
-            }
-          }}
-          className={selectClass}
-        >
-          <option value="all">Built-in tools + all plugins</option>
-          <option value="none">Built-in tools only</option>
-          <option value="custom">Built-in tools + chosen plugins…</option>
-        </select>
+      <Group label="Plugins">
+        <SettingRow id="handsfree-plugins" label="Available plugins" hint="Aide’s built-in tools are always available.">
+          <select id="handsfree-plugins"
+            value={showCustom ? "custom" : exposure}
+            disabled={loading}
+            onChange={(event) => {
+              const next = event.target.value;
+              if (next === "all") {
+                setCustomMode(false);
+                void update({ pluginCommands: "all" });
+              } else if (next === "none") {
+                setCustomMode(false);
+                void update({ pluginCommands: "none" });
+              } else {
+                // Entering custom: start from a clean slate unless a real list
+                // was already saved, then let the picker turn plugins on.
+                setCustomMode(true);
+                if (exposure !== "custom") void update({ pluginCommands: "none" });
+              }
+            }}
+            className={selectClass}
+          >
+            <option value="all">All plugins</option>
+            <option value="none">None</option>
+            <option value="custom">Selected plugins…</option>
+          </select>
+        </SettingRow>
         {showCustom ? (
           <PluginPicker
             value={pluginCommands}
@@ -411,6 +392,50 @@ export function BehaviorSettings() {
         ) : null}
         <BuiltInToolsLink />
       </Group>
+    </div>
+  );
+}
+
+export function DefaultBehaviorSettings() {
+  const { config, update } = useVoiceConfig();
+  const loading = config === null;
+
+  return (
+    <div className={cn(settingsCardClass, "space-y-5")}>
+      <p className="text-xs text-muted-foreground">Choose where Aide shows threads during a call.</p>
+      <Group label="Desktop">
+        {([
+          ["desktopComposerDestination", "When starting from the composer"],
+          ["desktopAideDestination", "When starting from the Aide page"],
+        ] as const).map(([key, label]) => (
+          <SettingRow key={key} id={`handsfree-${key}`} label={label}>
+            <select id={`handsfree-${key}`} className={selectClass} disabled={loading}
+              value={config?.[key] ?? DESKTOP_DEFAULTS[key]}
+              onChange={event => void update({ [key]: event.target.value as "navigate" | "panel" })}>
+              <option value="navigate">Main view</option>
+              <option value="panel">Side panel</option>
+            </select>
+          </SettingRow>
+        ))}
+        <SettingRow id="handsfree-desktop-tabs" label="When opening in the side panel">
+          <select id="handsfree-desktop-tabs" className={selectClass} disabled={loading} value={config?.desktopTabBehavior ?? "new"}
+            onChange={event => void update({ desktopTabBehavior: event.target.value as "reuse" | "new" })}>
+            <option value="new">New tab</option>
+            <option value="reuse">Reuse preview</option>
+          </select>
+        </SettingRow>
+        <p className="text-xs text-muted-foreground">Separate tabs are available from a thread page. The Aide page has one thread view.</p>
+      </Group>
+      <Group label="Mobile" hint="View threads in the drawer while keeping the call open.">
+        <SettingRow id="handsfree-view-behavior" label="When opening another thread">
+          <select id="handsfree-view-behavior" className={selectClass} disabled={loading} value={config?.mobileViewBehavior ?? "reuse"}
+            onChange={event => void update({ mobileViewBehavior: event.target.value as VoiceConfig["mobileViewBehavior"] })}>
+            <option value="reuse">Replace current view</option>
+            <option value="new">Keep existing views</option>
+          </select>
+        </SettingRow>
+      </Group>
+      <p className="text-xs italic text-muted-foreground">Ask Aide explicitly to open somewhere else for one request. Your defaults stay the same.</p>
     </div>
   );
 }
@@ -838,12 +863,12 @@ export function AudioSettings() {
   return (
     <div className={cn(settingsCardClass, "space-y-5")}>
       <Group label="Microphone">
-        <div className="flex items-center gap-2">
-          <select
+        <SettingRow id="handsfree-microphone" label="Input device">
+          <select id="handsfree-microphone"
             value={preferences.inputDeviceId}
             disabled={loading}
             onChange={(event) => change(event.target.value)}
-            className={cn(selectClass, "flex-1")}
+            className={selectClass}
           >
             <option value="">System default</option>
             {savedMicMissing ? (
@@ -868,7 +893,7 @@ export function AudioSettings() {
           >
             <RefreshIcon />
           </button>
-        </div>
+        </SettingRow>
 
         <div className="flex items-center gap-2">
           <Button
@@ -902,9 +927,11 @@ export function AudioSettings() {
       </Group>
 
       <Group label="Speaker">
-        <div className="cursor-not-allowed rounded-md border border-border bg-muted/40 px-2 py-1.5 text-sm text-muted-foreground">
-          {labelsHidden || !speakerName ? "System default" : speakerName}
-        </div>
+        <SettingRow id="handsfree-speaker" label="Output device">
+          <output id="handsfree-speaker" className="block w-56 max-w-full truncate rounded-md border border-border bg-muted/40 px-2 py-1.5 text-sm text-muted-foreground" title={speakerName ?? "System default"}>
+            {labelsHidden || !speakerName ? "System default" : speakerName}
+          </output>
+        </SettingRow>
         <p className="text-xs italic text-muted-foreground">
           Switching speakers in the app isn't supported yet — change your output in your system sound settings.
         </p>
