@@ -31,7 +31,8 @@ function fixture(mobile = true, origin: CallOrigin = "composer") {
     };
     if (method === "runTool") return { output: JSON.stringify(args), status: "success" };
     if (method === "getThreadDiff") return { title: "Target", shortstat: "1 file changed", files: [], truncated: false };
-    if (method === "resolveFilePreview") return { kind: "workspace", environmentId: `env-${args.threadId}`, path: args.path };
+    if (method === "resolveFilePreview") return args.asHostFile ? { kind: "host", hostId: "host", path: `/workspace/${args.threadId}/${args.path}` }
+      : { kind: "workspace", environmentId: `env-${args.threadId}`, path: args.path };
     return { ok: true };
   } } as Bindings["rpc"];
   const base: Bindings = { rpc, context: { threadId: "original", projectId: "original-project", onNewThreadScreen: false }, openNewThread() {}, routeThreadId: "original", navigateToThread: id => { navigated.push(id); agent.bind({ ...base, routeThreadId: id, context: { ...base.context, threadId: id } }); } };
@@ -76,6 +77,36 @@ test("a late file resolution cannot open after the call ends", async () => {
     return result;
   }) as Bindings["rpc"]["call"] } });
   assert.match((await f.execute("preview_file", { path: "README.md" })).output, /call ended/);
+});
+
+test("a declined workspace file uses the same file's explicit host target without navigation", async () => {
+  const f = fixture(false);
+  const targets: unknown[] = [];
+  f.agent.bind({ ...f.base, previewFile: ({ target }) => { targets.push(target); return target.kind === "host"; } });
+  assert.equal((await f.execute("preview_file", { thread_id: "other", path: "server.js" })).status, "success");
+  assert.deepEqual(targets, [{ kind: "workspace", environmentId: "env-other", path: "server.js" },
+    { kind: "host", hostId: "host", path: "/workspace/other/server.js" }]);
+  assert.deepEqual(f.navigated, []);
+  const original = f.base.rpc.call;
+  f.agent.bind({ ...f.base, previewFile: () => false, rpc: { call: (async (method: any, args: any) => {
+    const result = await original(method, args);
+    if (method === "resolveFilePreview" && args.asHostFile) f.internal.nonce = null;
+    return result;
+  }) as Bindings["rpc"]["call"] } });
+  assert.match((await f.execute("preview_file", { path: "server.js" })).output, /call ended/);
+});
+
+test("show_diff targets a named changed file rather than substituting full-file preview", async () => {
+  const f = fixture(false);
+  const opened: unknown[] = [];
+  f.desktop.registerPresenter({ kind: "thread", ownerId: "original", available: () => true, open: () => true,
+    openDiff: (...args) => { opened.push(args); return true; } });
+  const result = await f.execute("show_diff", { path: "server.js" });
+  assert.equal(result.status, "success");
+  assert.match(result.output, /showing changes to server.js/);
+  assert.deepEqual(opened, [["original", "Target", "server.js"]]);
+  assert.deepEqual(f.calls.find(call => call.method === "getThreadDiff")?.args, { threadId: "original", path: "server.js" });
+  assert.equal(f.calls.some(call => call.method === "resolveFilePreview"), false);
 });
 
 test("browser opens are local, respect host acceptance, and reject unsupported URLs and mobile", async () => {

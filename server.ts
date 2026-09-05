@@ -6,7 +6,7 @@
 // bb SDK (threads, projects, diffs, panes).
 import { readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, posix, win32 } from "node:path";
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import {
@@ -40,11 +40,15 @@ export const rpcContract = defineRpcContract({
   resolveFilePreview: {
     input: z.object({
       threadId: z.string().min(1),
+      asHostFile: z.boolean().optional(),
       path: z.string().min(1).refine(path => !path.startsWith("/") && !/^[a-z][a-z0-9+.-]*:/i.test(path) &&
         !/[\\\u0000]/.test(path) && path.split("/").every(part => !!part && part !== "." && part !== ".."),
       "Use a workspace-relative file path without traversal, such as src/app.ts."),
     }).strict(),
-    output: z.object({ kind: z.literal("workspace"), environmentId: z.string(), path: z.string() }).strict(),
+    output: z.union([
+      z.object({ kind: z.literal("workspace"), environmentId: z.string(), path: z.string() }).strict(),
+      z.object({ kind: z.literal("host"), hostId: z.string(), path: z.string() }).strict(),
+    ]),
   },
   getThreadDiff: {
     input: z.object({ threadId: z.string().min(1), path: z.string().min(1).optional() }).strict(),
@@ -458,7 +462,7 @@ export function toolSchemas(pluginCommands: PluginCommandInfo[] = [], mobile = f
     { type: "function", name: "stop_thread", description: "Stop a running thread.", parameters: { type: "object", properties: { thread_id: { type: "string" } }, required: ["thread_id"] } },
     { type: "function", name: "archive_thread", description: "Archive a thread (and its children).", parameters: { type: "object", properties: { thread_id: { type: "string" } }, required: ["thread_id"] } },
     { type: "function", name: "rename_thread", description: "Rename a thread.", parameters: { type: "object", properties: { thread_id: { type: "string" }, title: { type: "string" } }, required: ["thread_id", "title"] } },
-    { type: "function", name: "show_diff", description: mobile ? "Summarize a thread's workspace diff without navigating away from the mobile call." : "Show a thread's workspace diff in a side-panel tab without navigating the workspace. Returns a changed-file summary; the panel renders patches. Supports thread pages and the Aide page.", parameters: { type: "object", properties: { thread_id: { type: "string" } }, required: ["thread_id"] } },
+    { type: "function", name: "show_diff", description: mobile ? "Summarize a thread's workspace diff without navigating away from the mobile call." : "Show a workspace diff in a side-panel tab without navigating. Optional path selects that changed file in the diff (not the full file preview). Optional thread_id defaults to the currently shown thread. Returns a changed-file summary. Supports thread pages and Aide.", parameters: { type: "object", properties: { thread_id: { type: "string" }, ...(!mobile ? { path: { type: "string", description: "Workspace-relative changed-file path." } } : {}) }, ...(mobile ? { required: ["thread_id"] } : {}) } },
     { type: "function", name: "open_browser", description: "Open an HTTP(S) URL on the calling desktop using BB's saved browser preference (BB browser or external browser). Cannot force the built-in browser, confirm page load, or read/control the page. Does not change preferences. Use only when the user asks to open a URL.", parameters: { type: "object", properties: { url: { type: "string", description: "Complete http:// or https:// URL." } }, required: ["url"] } },
     { type: "function", name: "update_instructions", description: "Amend your own standing instructions (the system prompt for future voice sessions). Pass the COMPLETE new instructions text, not a diff. Use only when the user asks for a lasting behavior change.", parameters: { type: "object", properties: { instructions: { type: "string", description: "The full replacement instructions." }, reason: { type: "string", description: "One short sentence: why, quoting the user's request." } }, required: ["instructions", "reason"] } },
     { type: "function", name: "preview_file", description: "Request BB's native file preview in the calling desktop window. path must be a known workspace-relative file path (e.g. README.md or src/app.ts), not a URL or an absolute path. Optional thread_id chooses the workspace; omit for the current thread. Optional line reveals a one-based line number. Opens a preview without navigating the thread or using an external editor. Host acceptance does not confirm the file exists or has loaded. Ask for the path/thread if unclear; do not guess filenames.", parameters: { type: "object", properties: { path: { type: "string" }, thread_id: { type: "string" }, line: { type: "integer", minimum: 1 } }, required: ["path"] } },
@@ -469,9 +473,19 @@ export function toolSchemas(pluginCommands: PluginCommandInfo[] = [], mobile = f
 }
 
 export function threadViewInstructions(mobile: boolean) {
-  return mobile
-    ? "Mobile thread views: focus_thread shows a thread in the drawer without navigating away from the call. disposition new preserves other views and reuse replaces the selected view. focus_threads opens a batch into the drawer switcher, not separate native bb tabs. For all running threads, use list_live_threads and exclude recently-finished entries. Use manage_views to list, select, or close mobile views. Use set_view_behavior only for an explicitly requested lasting mobile preference. Call get_context for the thread currently shown. If the drawer is unavailable, report the limitation; do not navigate away from the mobile call."
-    : "Desktop navigation: focus_thread destination auto follows the saved preference for the call origin captured at startup. Calls from the composer default to navigating; calls from Aide default to its single side-panel view; global/sidebar starts default to navigation. Explicit requests to navigate or show beside the call override the default for that action only. focus_threads opens real native side-panel tabs on existing thread pages. The Aide page supports only one side-panel thread, not multiple native tabs; report that limit instead of replacing a batch with one view or navigating without being asked. Native tab close/reorder controls belong to BB and are not voice tools in this version. Call get_context for current visible-thread context and side-panel capabilities. Use set_desktop_behavior only for explicitly requested lasting preferences. Never claim an open succeeded before the tool result. Mobile drawer preferences do not apply to desktop. open_browser opens an HTTP(S) URL through the client browser preference; do not claim it forces the BB browser or that a page loaded. show_diff opens a diff panel beside the call without navigating. preview_file opens a known workspace-relative file in BB’s native preview, with an optional line number and thread_id; omit thread_id for the current thread. Ask for missing paths or thread context instead of inventing them. These actions do not change saved preferences. Native terminal-tab opening and arbitrary plugin-tab opening are not available through these tools.";
+  if (mobile) return "Mobile thread views: focus_thread shows a thread in the drawer without navigating away from the call. disposition new preserves other views and reuse replaces the selected view. focus_threads opens a batch into the drawer switcher, not separate native bb tabs. For all running threads, use list_live_threads and exclude recently-finished entries. Use manage_views to list, select, or close mobile views. Use set_view_behavior only for an explicitly requested lasting mobile preference. Call get_context for the thread currently shown. If the drawer is unavailable, report the limitation; do not navigate away from the mobile call.";
+  return `Desktop navigation:
+- Use the call origin captured at startup for saved defaults. Composer calls default to workspace navigation, Aide calls to its fixed Thread view, and global/sidebar calls to navigation. Later navigation never changes that origin.
+- An ordinary unambiguous "show/open X" follows the saved default. Do not ask on every request. If the user's intent is ambiguous between moving the workspace, adding a side-panel tab, or replacing a view, ask one short question before acting, offering only choices supported on this screen. You can ask directly in conversation; no tool is needed to ask.
+- "Navigate/take me to X" means destination navigate. "Beside/in the side panel" means destination panel. "Also/as well/keep the other one/new tab" means destination panel and disposition new, preserving existing tabs. "Replace the preview" means destination panel and disposition reuse. If "replace this tab" could mean a dedicated native tab, clarify: reuse targets the reusable Thread preview, not arbitrary native tabs.
+- focus_threads preserves existing tabs on thread pages. Aide's own page supports one fixed Thread view; it cannot add multiple native thread tabs. If adding is unavailable, ask whether to replace that Thread view or navigate to a thread page. Never silently reinterpret an additive request as replacement.
+- If a tool reports clarification needed, nothing changed. Ask the user, then retry with their chosen destination/disposition. Do not retry a declined action with guessed arguments. Changing Aide's existing fixed Thread target requires explicit disposition reuse after the user requests replacement.
+- Describe the exact tool outcome: navigated the workspace, opened/selected separate side-panel tabs (existing tabs kept), selected/updated the reusable Thread preview, or replaced the fixed Handsfree Thread view. BB does not distinguish newly created tabs from already-existing tabs in its return value; never invent that distinction or say a view is "alongside" another when it replaced it.
+- Call get_context for current visible-thread context and side-panel capabilities. Use set_desktop_behavior only for explicitly requested lasting preferences. Per-request choices never change saved preferences. Mobile drawer preferences do not apply to desktop.
+- open_browser follows the client browser preference and reports request acceptance, not page load; it cannot force internal/external or control the page.
+- show_diff opens a diff panel without navigating. To show changes to a specific file, pass its workspace-relative path to show_diff; do not substitute preview_file, which shows the full file. Ask if a named file is ambiguous or absent from the changed-file list.
+- preview_file opens a known workspace-relative file with optional line and thread_id. Ask for missing paths/context rather than inventing them. A declined preview does not mean a plugin is missing. Offer navigation to the owning thread or opening from Handsfree if the current screen cannot accept it; never navigate automatically.
+- Native tab closure/reordering, Terminal-tab opening, and arbitrary plugin-tab opening are not available through these tools. Never claim an open succeeded before the tool result.`;
 }
 
 const DEFAULT_PROMPT = `You are Aide, a concise voice operator for bb — the user's agentic IDE where coding agents run in threads inside projects.
@@ -1235,9 +1249,16 @@ export default async function plugin(bb: BbPluginApi) {
   });
 
   bb.rpc.register(rpcContract, {
-    async resolveFilePreview({ threadId, path }) {
+    async resolveFilePreview({ threadId, path, asHostFile }) {
       const environmentId = await resolveEnvironmentId(threadId);
       if (!environmentId) throw new Error("This thread has no workspace to preview files from.");
+      if (asHostFile) {
+        const environment = await bb.sdk.environments.get({ environmentId });
+        const root = environment.path;
+        if (!root || (!posix.isAbsolute(root) && !win32.isAbsolute(root))) throw new Error("This workspace has no resolved absolute path for a native file preview.");
+        return { kind: "host" as const, hostId: environment.hostId,
+          path: posix.isAbsolute(root) ? posix.join(root, path) : win32.join(root, path) };
+      }
       return { kind: "workspace" as const, environmentId, path };
     },
     async getThreadDiff({ threadId, path }) { return readThreadDiff(bb, threadId, path); },

@@ -1,6 +1,6 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { experimental_Diff as Diff, experimental_useFixedTabTarget, useRpc } from "@get-bb/plugin-sdk/app";
-import type { PluginThreadPanelProps } from "@get-bb/plugin-sdk/app";
+import type { PluginThreadPanelProps, ExperimentalPluginFixedTabReference } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "./server";
 import type { readThreadDiff } from "./desktop-diff-data";
 import { DESKTOP_FIXED_TAB } from "./desktop-thread";
@@ -8,25 +8,34 @@ import { desktopViews } from "./desktop-views";
 import { LiveCallControls } from "./voice-chrome";
 import { ViewErrorBoundary } from "./thread-view-boundary";
 
-export const DESKTOP_DIFF_TAB = { ...DESKTOP_FIXED_TAB, id: "desktop-diff" };
+export const DESKTOP_DIFF_TAB: ExperimentalPluginFixedTabReference<{ threadId: string; path?: string }> = {
+  panelId: DESKTOP_FIXED_TAB.panelId, id: "desktop-diff",
+  experimental_target: { validate: (value): value is { threadId: string; path?: string } =>
+    !!value && typeof value === "object" && !Array.isArray(value) &&
+    Object.keys(value).every(key => key === "threadId" || key === "path") &&
+    typeof value.threadId === "string" && !!value.threadId.trim() &&
+    (value.path === undefined || (typeof value.path === "string" && !!value.path.trim())),
+  },
+};
 
 export function DesktopDiffTab({ threadId, params }: PluginThreadPanelProps) {
   const value = params && typeof params === "object" && !Array.isArray(params) ? params : null;
   const targetId = typeof value?.threadId === "string" ? value.threadId : threadId;
-  return <DesktopDiffContent key={targetId} threadId={targetId} />;
+  const selection = useSyncExternalStore(desktopViews.subscribe, () => desktopViews.diffTarget(threadId, targetId));
+  return <DesktopDiffContent key={`${targetId}:${selection?.sequence ?? 0}`} threadId={targetId} initialPath={selection?.path} />;
 }
 
 export function DesktopPageDiff() {
   const target = experimental_useFixedTabTarget(DESKTOP_DIFF_TAB);
-  return target ? <DesktopDiffContent key={target.target.threadId} threadId={target.target.threadId} />
+  return target ? <DesktopDiffContent key={`${target.target.threadId}:${target.sequence}`} threadId={target.target.threadId} initialPath={target.target.path} />
     : <p className="p-4 text-sm text-muted-foreground">Ask Aide to show a thread’s diff.</p>;
 }
 
-function DesktopDiffContent({ threadId }: { threadId: string }) {
+function DesktopDiffContent({ threadId, initialPath }: { threadId: string; initialPath?: string }) {
   const rpc = useRpc<typeof rpcContract>();
   const root = useRef<HTMLDivElement>(null);
   const [data, setData] = useState<Awaited<ReturnType<typeof readThreadDiff>> | null>(null);
-  const [path, setPath] = useState<string>();
+  const [path, setPath] = useState<string | undefined>(initialPath);
   const [revision, setRevision] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);

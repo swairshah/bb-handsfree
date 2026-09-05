@@ -1014,9 +1014,19 @@ export class VoiceAgent {
         const target = await bindings.rpc.call("resolveFilePreview", { threadId, path: args.path });
         if (dc.readyState !== "open" || this.nonce !== toolSessionId) throw new Error("The call ended before the file could be previewed.");
         const location = typeof args.line === "number" ? { kind: "line" as const, line: args.line, column: null } : null;
-        if (!this.bindings?.previewFile?.({ target, location })) throw new Error("This screen declined the file-preview request.");
-        output = `File preview request accepted for ${target.path}${location ? ` at line ${location.line}` : ""}. BB will load the file; loading is not confirmed.`;
-        label = `Requested preview of ${target.path}`;
+        if (!this.bindings?.previewFile?.({ target, location })) {
+          // A thread-page workspace preview is limited to its own environment.
+          // A host-file intent identifies the same file without borrowing that
+          // environment. The host still decides whether this surface supports it.
+          this.logDiag("filePreview.workspaceDeclined", { threadId, routeThreadId: this.bindings?.routeThreadId, target });
+          const hostTarget = await bindings.rpc.call("resolveFilePreview", { threadId, path: args.path, asHostFile: true });
+          if (dc.readyState !== "open" || this.nonce !== toolSessionId) throw new Error("The call ended before the file could be previewed.");
+          if (!this.bindings?.previewFile?.({ target: hostTarget, location })) {
+            throw new Error("BB cannot preview this file from the current screen. Ask whether to navigate to its thread or open it from Handsfree. Nothing was navigated; no additional file-viewer plugin is required for code files.");
+          }
+        }
+        output = `File preview request accepted for ${args.path}${location ? ` at line ${location.line}` : ""}. BB will load the file; loading is not confirmed.`;
+        label = `Requested preview of ${args.path}`;
         presentation = "panel";
         status = "success";
       } else if (name === "open_browser") {
@@ -1030,13 +1040,16 @@ export class VoiceAgent {
         presentation = "browser";
         status = "success";
       } else if (!clientDescriptor.mobile && name === "show_diff") {
-        if (typeof args.thread_id !== "string" || !args.thread_id.trim()) throw new Error("Provide a valid thread ID.");
-        const diff = await bindings.rpc.call("getThreadDiff", { threadId: args.thread_id });
+        const threadId = args.thread_id === undefined ? context?.threadId : args.thread_id;
+        if (typeof threadId !== "string" || !threadId.trim()) throw new Error("Specify which thread's diff to show.");
+        if (args.path !== undefined && (typeof args.path !== "string" || !args.path.trim())) throw new Error("Provide a changed file's workspace-relative path.");
+        const path = typeof args.path === "string" ? args.path : undefined;
+        const diff = await bindings.rpc.call("getThreadDiff", { threadId, ...(path ? { path } : {}) });
         if (dc.readyState !== "open" || this.nonce !== toolSessionId) throw new Error("The call ended before the diff could be shown.");
-        this.desktop.openDiff(args.thread_id, diff.title);
-        output = JSON.stringify({ message: `Opened the diff panel for ${diff.title}.`, shortstat: diff.shortstat,
+        this.desktop.openDiff(threadId, diff.title, path);
+        output = JSON.stringify({ message: `Opened or selected the diff panel for ${diff.title}${path ? `, showing changes to ${path}` : ""}. The workspace was not navigated.`, path: diff.path, shortstat: diff.shortstat,
           files: diff.files.slice(0, 50), truncated: diff.truncated });
-        label = `Showed diff for ${diff.title}`;
+        label = path ? `Showed changes to ${path}` : `Showed diff for ${diff.title}`;
         presentation = "panel";
         status = "success";
       } else if (name === "set_composer_text") {
@@ -1112,9 +1125,8 @@ export class VoiceAgent {
           presentation = "navigation";
         } else {
           const opened = this.desktop.open(views, disposition, desktop.desktopTabBehavior);
-          output = opened.count > 1 ? `Opened ${opened.count} native side-panel tabs. ${opened.selected.title} is selected.`
-            : `Showing ${opened.selected.title} in the side panel.`;
-          label = opened.count > 1 ? `Opened ${opened.count} thread tabs` : `Showed ${opened.selected.title}`;
+          output = opened.message;
+          label = opened.label;
           presentation = "panel";
         }
         status = "success";

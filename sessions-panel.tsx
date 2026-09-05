@@ -620,7 +620,7 @@ export function SessionsPanel() {
     available: () => !clientDescriptor.mobile && document.visibilityState !== "hidden" &&
       !!scrollRef.current?.getClientRects().length && !scrollRef.current.closest('[inert], [aria-hidden="true"]'),
     open: view => appPanel.openFixedTab({ surface: { kind: "current" }, tab: DESKTOP_FIXED_TAB, target: { threadId: view.threadId } }),
-    openDiff: threadId => appPanel.openFixedTab({ surface: { kind: "current" }, tab: DESKTOP_DIFF_TAB, target: { threadId } }),
+    openDiff: (threadId, _title, path) => appPanel.openFixedTab({ surface: { kind: "current" }, tab: DESKTOP_DIFF_TAB, target: { threadId, ...(path ? { path } : {}) } }),
   }), [appPanel]);
   const [sessions, setSessions] = useState<SessionRow[] | null>(null);
   const [hasMore, setHasMore] = useState(false);

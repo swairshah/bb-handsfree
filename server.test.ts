@@ -16,6 +16,10 @@ test("file previews use the named thread's environment and reject ambiguous path
     }
     await assert.rejects(harness.behavior.callRpc("resolveFilePreview", { threadId: "none", path: "README.md" }), /no workspace/);
     assert.equal(harness.inspection.sdk.callsTo("threads.open").length, 0);
+    harness.sdk.stub("environments.get", async () => ({ hostId: "remote-host", path: "/workspace/other" }) as any);
+    assert.deepEqual(await harness.behavior.callRpc("resolveFilePreview", { threadId: "other", path: "src/my file.ts", asHostFile: true }),
+      { kind: "host", hostId: "remote-host", path: "/workspace/other/src/my file.ts" });
+    await assert.rejects(harness.behavior.callRpc("resolveFilePreview", { threadId: "other", path: "../escape", asHostFile: true }));
   } finally { await harness.lifecycle.dispose(); }
 });
 

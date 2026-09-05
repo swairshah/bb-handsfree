@@ -22,6 +22,19 @@ for that action only. An explicit new/reuse disposition implies a side panel
 unless a conflicting navigate destination was explicitly supplied. Conflicting
 requests fail rather than guessing.
 
+Ordinary unambiguous requests use saved defaults. Aide is instructed to ask one
+short question when navigation, addition, or replacement is ambiguous, offering
+only supported choices. "Also/as well" maps to a new separate tab; it must not
+silently replace a view. The local dispatcher blocks replacing an already
+targeted Handsfree Thread view unless disposition is explicitly `reuse`, returning
+an instruction to clarify without changing the view. Natural-language intent
+and the reply still depend on the voice model; that guidance needs live testing.
+
+Results and activity labels distinguish workspace navigation, separate tabs,
+the reusable preview, and the fixed Thread view. Because BB returns only an
+acceptance boolean, a native-tab result says "opened or selected", not "created"
+or "selected existing" without evidence. Replacement results name both targets.
+
 Desktop `focus_threads` opens separate native side-panel tabs, regardless of the
 single-thread destination/tab preference. Existing tabs remain, duplicates are
 focused, and the first requested thread is selected. To show all running threads,
@@ -67,7 +80,7 @@ external. The SDK cannot force the built-in browser or confirm page loading.
 The tool reports host acceptance, never page-load success. It cannot inspect,
 click, or type into web pages. Mobile rejects this tool even for a stale schema.
 
-Desktop `show_diff({ thread_id })` opens a diff panel beside the call, independent
+Desktop `show_diff({ thread_id?, path? })` opens a diff panel beside the call, independent
 of thread-navigation preferences. Existing thread pages get native tabs keyed
 by thread ID; the Aide page has one additional fixed Diff tab. The plugin uses
 BB's `environments.diffFiles` / `diffPatch` APIs and `experimental_Diff` renderer,
@@ -75,6 +88,11 @@ with a file selector, Refresh, binary/large-file notices, and shared call
 controls. This is a Handsfree panel using BB's renderer, not programmatic
 selection of BB's built-in workspace Changes tab. Patches load one file at a
 time. Refresh updates the snapshot; it does not subscribe to filesystem changes.
+An optional changed-file path selects that file in the diff. On thread pages,
+the tab identity remains the thread ID; a window-local selection request changes
+the selected file without making another native tab. On Handsfree, the fixed
+Diff tab receives the file path in its transient target. Omitted thread ID uses
+the current context. A missing file fails before changing the displayed diff.
 Mobile retains its existing spoken-summary behavior without navigation.
 
 `preview_file({ path, thread_id?, line? })` uses BB’s native shared file preview
@@ -85,10 +103,27 @@ line numbers are one-based. This requests a preview without navigating or
 opening an external editor. BB owns rendering and missing-file errors; the tool
 reports acceptance, not completed loading. Late resolutions after call teardown
 cannot open a preview, and mobile rejects the tool. Preferred external file
-opening is also supported by the SDK but is not exposed by this tool. Terminal backend APIs support create/list/input/output/resize/
+opening is also supported by the SDK but is not exposed by this tool.
+
+BB's thread-page workspace preview rejects targets from another environment.
+When that happens, Handsfree resolves the same file to its environment's host
+and absolute path, then requests the supported native host-file preview. This
+was verified for two workspaces on the same machine. The host can still decline
+(for example, another machine); no route or external-app fallback occurs.
+The error offers navigating to the owning thread or trying from Handsfree.
+
+Terminal backend APIs support create/list/input/output/resize/
 close/restart, but no frontend API selects the native Terminal tab or embeds
 BB's terminal renderer. Those actions are not added here. Arbitrary third-party
 plugin tabs are also outside the owner-scoped panel APIs.
+
+SDK audit: declarations and lockfile now use 0.4.47. Browser destination overrides,
+dynamic plugin-page thread tabs, general native-tab management, and native
+Terminal-tab intents remain absent from the ordinary navigation hooks. The new
+sidebar-navigation renderer receives host items and an activation callback;
+that is a possible opt-in route to navigating other plugin pages, but requires
+participating as the sidebar renderer and does not expose arbitrary panel tabs.
+It has not been enabled as part of this change.
 
 Presenters are registered in the calling window and checked at execution time.
 Only the main thread composer can register its thread-page panel destination;
@@ -143,3 +178,10 @@ Before merging, retest a real voice call:
 9. Ask “Preview README.md in this thread” and “Preview server.ts at line 40.”
    Repeat from Handsfree with a named thread, and with a thread in a different
    workspace. Confirm the correct file opens without changing the route.
+10. On Handsfree, show one thread, then ask to show another “as well.” Aide
+    should explain the single Thread-view limit and ask about replacement or
+    navigation. Confirm the first view remains until you choose replacement.
+11. With a diff open, ask “Show the changes to [a changed file],” then name a
+    different changed file. Confirm the selected diff file changes in the same
+    tab, without opening a full-file preview. A missing file should leave the
+    displayed diff unchanged and prompt for a valid changed file.

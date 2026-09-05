@@ -52,6 +52,40 @@ test("Aide page rejects multi-tab requests before any UI change", () => {
   assert.equal(desktop.open([view("a")], "auto", "new").count, 1);
 });
 
+test("fixed Thread replacement requires an explicit choice and reports exactly what changed", () => {
+  const desktop = new DesktopViews();
+  const opens: string[] = [];
+  desktop.registerPresenter({ kind: "page", ownerId: "handsfree", available: () => true, open: view => { opens.push(view.threadId); return true; } });
+  assert.match(desktop.open([view("a")], "auto", "new").message, /single Handsfree Thread view/);
+  assert.throws(() => desktop.open([view("b")], "auto", "new"), /Clarification needed.*Title a.*Title b/);
+  assert.deepEqual(opens, ["a"]);
+  assert.match(desktop.open([view("a")], "auto", "new").message, /target is unchanged/);
+  assert.match(desktop.open([view("b")], "reuse", "new").message, /Replaced Title a with Title b/);
+});
+
+test("separate tabs and reusable previews produce distinct truthful outcomes", () => {
+  const desktop = new DesktopViews();
+  desktop.registerPresenter({ kind: "thread", ownerId: "source", available: () => true, open: () => true });
+  assert.match(desktop.open([view("a")], "new", "new").message, /Opened or selected a separate.*Existing tabs were kept/);
+  assert.match(desktop.open([view("a")], "reuse", "new").message, /reusable Thread preview/);
+  assert.match(desktop.open([view("b")], "reuse", "new").message, /Replaced Title a with Title b.*reusable Thread preview/);
+});
+
+test("diff file selection is scoped to the owning pane and changes only on accepted opens", () => {
+  const desktop = new DesktopViews();
+  let accept = true;
+  desktop.registerPresenter({ kind: "thread", ownerId: "source", available: () => true, open: () => true, openDiff: () => accept });
+  desktop.openDiff("a", "A", "first.ts");
+  const first = desktop.diffTarget("source", "a");
+  desktop.openDiff("a", "A", "second.ts");
+  assert.equal(desktop.diffTarget("source", "a")?.path, "second.ts");
+  assert.notEqual(desktop.diffTarget("source", "a")?.sequence, first?.sequence);
+  assert.equal(desktop.diffTarget("other", "a"), null);
+  accept = false;
+  assert.throws(() => desktop.openDiff("a", "A", "third.ts"), /declined/);
+  assert.equal(desktop.diffTarget("source", "a")?.path, "second.ts");
+});
+
 test("partial host failure reports opened tabs rather than pretending the batch was atomic", () => {
   const desktop = new DesktopViews();
   desktop.registerPresenter({ kind: "thread", ownerId: "source", available: () => true, open: target => target.threadId !== "b" });
