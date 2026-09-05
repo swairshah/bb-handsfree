@@ -31,6 +31,7 @@ function fixture(mobile = true, origin: CallOrigin = "composer") {
     };
     if (method === "runTool") return { output: JSON.stringify(args), status: "success" };
     if (method === "getThreadDiff") return { title: "Target", shortstat: "1 file changed", files: [], truncated: false };
+    if (method === "resolveFilePreview") return { kind: "workspace", environmentId: `env-${args.threadId}`, path: args.path };
     return { ok: true };
   } } as Bindings["rpc"];
   const base: Bindings = { rpc, context: { threadId: "original", projectId: "original-project", onNewThreadScreen: false }, openNewThread() {}, routeThreadId: "original", navigateToThread: id => { navigated.push(id); agent.bind({ ...base, routeThreadId: id, context: { ...base.context, threadId: id } }); } };
@@ -46,6 +47,36 @@ function fixture(mobile = true, origin: CallOrigin = "composer") {
   };
   return { workspace, desktop, preferences, navigated, agent, internal, calls, sent, dc, base, execute };
 }
+
+test("file previews resolve the shown or named workspace and optional line without navigating", async () => {
+  const f = fixture(false);
+  const previews: unknown[] = [];
+  f.agent.bind({ ...f.base, previewFile: options => { previews.push(options); return true; } });
+  f.desktop.registerContext(() => ({ kind: "thread", id: "thread:shown", threadId: "shown", projectId: "p", title: "Shown" }));
+  assert.equal((await f.execute("preview_file", { path: "README.md", line: 12 })).status, "success");
+  assert.deepEqual(previews[0], { target: { kind: "workspace", environmentId: "env-shown", path: "README.md" }, location: { kind: "line", line: 12, column: null } });
+  await f.execute("preview_file", { thread_id: "other", path: "src/app.ts" });
+  assert.deepEqual(previews[1], { target: { kind: "workspace", environmentId: "env-other", path: "src/app.ts" }, location: null });
+  for (const line of [0, -1, 1.5, "12"]) assert.equal((await f.execute("preview_file", { path: "README.md", line })).status, "error");
+  f.agent.bind({ ...f.base, previewFile: () => false });
+  assert.equal((await f.execute("preview_file", { path: "README.md" })).status, "error");
+  assert.deepEqual(f.navigated, []);
+  assert.equal(f.calls.some(call => call.method === "runTool"), false);
+  const mobile = fixture(true);
+  assert.match((await mobile.execute("preview_file", { path: "README.md" })).output, /desktop-only/);
+  assert.equal(mobile.calls.some(call => call.method === "resolveFilePreview"), false);
+});
+
+test("a late file resolution cannot open after the call ends", async () => {
+  const f = fixture(false);
+  const original = f.base.rpc.call;
+  f.agent.bind({ ...f.base, previewFile: () => { throw new Error("Must not open"); }, rpc: { call: (async (method: any, args: any) => {
+    const result = await original(method, args);
+    if (method === "resolveFilePreview") f.internal.nonce = null;
+    return result;
+  }) as Bindings["rpc"]["call"] } });
+  assert.match((await f.execute("preview_file", { path: "README.md" })).output, /call ended/);
+});
 
 test("browser opens are local, respect host acceptance, and reject unsupported URLs and mobile", async () => {
   for (const origin of ["composer", "handsfree"] as const) {

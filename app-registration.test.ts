@@ -40,6 +40,7 @@ test("the actual app registers distinct native desktop tabs and mobile drawers",
           composer: { scope: { kind: "thread", threadId: "source" } },
           openThreadPanel: () => true,
           openUrl: () => true,
+          openFilePreview: () => true,
           rpc: { getConfig: () => ({ shortcuts: { toggle: "Mod+Shift+H", mute: "Mod+Shift+U" } }), logEvent: () => ({ ok: true }), requestPresence: () => ({ ok: true }) },
         });
         try {
@@ -50,6 +51,9 @@ test("the actual app registers distinct native desktop tabs and mobile drawers",
           assert.deepEqual(slot.inspection.navigateCalls.at(-1), { method: "openThreadPanel", options: { actionId: "desktop-diff", title: "Diff · Target", params: { threadId: "target" } } });
           assert.equal(loaded.voiceAgent.bindings.openUrl("https://example.com/"), true);
           assert.deepEqual(slot.inspection.navigateCalls.at(-1), { method: "openUrl", url: "https://example.com/" });
+          const options = { target: { kind: "workspace", environmentId: "env", path: "README.md" }, location: null };
+          assert.equal(loaded.voiceAgent.bindings.previewFile(options), true);
+          assert.deepEqual(slot.inspection.navigateCalls.at(-1), { method: "experimental_openFilePreview", options });
           slot.container.setAttribute("data-handsfree-desktop-thread", "embedded");
           assert.throws(() => loaded.desktopViews.open([{ threadId: "other" }], "new", "new"), /no available side panel/);
         } finally {

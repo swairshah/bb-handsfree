@@ -227,6 +227,7 @@ const ACTIONS: Record<string, { family: ActionFamily; verb: string }> = {
   set_pane: { family: "navigate", verb: "Changed the layout" },
   show_diff: { family: "navigate", verb: "Opened a diff" },
   open_browser: { family: "navigate", verb: "Requested browser open" },
+  preview_file: { family: "navigate", verb: "Requested file preview" },
   send_to_thread: { family: "mutate", verb: "Sent a message" },
   start_thread: { family: "mutate", verb: "Started a thread" },
   stop_thread: { family: "mutate", verb: "Stopped a thread" },
@@ -599,6 +600,7 @@ export function SessionsPanel() {
       rpc,
       navigateToThread: navigate.toThread,
       openUrl: navigate.openUrl,
+      previewFile: navigate.experimental_openFilePreview,
       routeThreadId: threadId,
       context: { threadId: threadId ?? null, projectId: projectId ?? null, onNewThreadScreen: false },
       openNewThread: (targetProjectId) =>

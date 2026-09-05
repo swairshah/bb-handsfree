@@ -131,6 +131,7 @@ function AideVoiceButton() {
       rpc,
       navigateToThread: navigate.toThread,
       openUrl: navigate.openUrl,
+      previewFile: navigate.experimental_openFilePreview,
       routeThreadId: threadId,
       context: { threadId: effectiveThreadId, projectId: effectiveProjectId, onNewThreadScreen },
       composer: {

@@ -3,6 +3,22 @@ import assert from "node:assert/strict";
 import { createFakePluginHost, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import plugin, { toolSchemas, threadViewInstructions } from "./server.ts";
 
+test("file previews use the named thread's environment and reject ambiguous paths or absent workspaces", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "handsfree", sdk: { threads: {
+    get: async ({ threadId }) => makeThreadResponse({ id: threadId, environmentId: threadId === "none" ? null : `env-${threadId}` }),
+  } } });
+  try {
+    await plugin(bb);
+    assert.deepEqual(await harness.behavior.callRpc("resolveFilePreview", { threadId: "other", path: "src/my file.ts" }),
+      { kind: "workspace", environmentId: "env-other", path: "src/my file.ts" });
+    for (const path of ["/tmp/file", "../file", "a/../file", "https://example.com/a", "C:\\file", "", "a\u0000b"]) {
+      await assert.rejects(harness.behavior.callRpc("resolveFilePreview", { threadId: "a", path }));
+    }
+    await assert.rejects(harness.behavior.callRpc("resolveFilePreview", { threadId: "none", path: "README.md" }), /no workspace/);
+    assert.equal(harness.inspection.sdk.callsTo("threads.open").length, 0);
+  } finally { await harness.lifecycle.dispose(); }
+});
+
 test("diff RPC resolves the thread workspace, loads patches on demand, and reports unavailable content", async () => {
   const { bb, harness } = createFakePluginHost({ pluginId: "handsfree" });
   let branch: string | null = "main";
@@ -106,6 +122,8 @@ test("desktop tools expose destination overrides and native batches, independent
   assert.ok(desktop.some(tool => tool.name === "focus_threads"));
   assert.ok(desktop.some(tool => tool.name === "set_desktop_behavior"));
   assert.ok(desktop.some(tool => tool.name === "open_browser"));
+  assert.ok(desktop.some(tool => tool.name === "preview_file"));
+  assert.equal(mobile.some(tool => tool.name === "preview_file"), false);
   assert.equal(mobile.some(tool => tool.name === "open_browser"), false);
   assert.equal(mobile.some(tool => tool.name === "set_desktop_behavior"), false);
   assert.equal("disposition" in focusMobile.parameters.properties, true);

@@ -77,8 +77,15 @@ selection of BB's built-in workspace Changes tab. Patches load one file at a
 time. Refresh updates the snapshot; it does not subscribe to filesystem changes.
 Mobile retains its existing spoken-summary behavior without navigation.
 
-The current SDK also supports semantic file previews and preferred external
-file opening. Terminal backend APIs support create/list/input/output/resize/
+`preview_file({ path, thread_id?, line? })` uses BB’s native shared file preview
+through `experimental_openFilePreview`. It defaults to the currently shown
+thread, resolves that thread’s environment on the server, and passes an explicit
+workspace target to the calling window. Paths are workspace-relative; optional
+line numbers are one-based. This requests a preview without navigating or
+opening an external editor. BB owns rendering and missing-file errors; the tool
+reports acceptance, not completed loading. Late resolutions after call teardown
+cannot open a preview, and mobile rejects the tool. Preferred external file
+opening is also supported by the SDK but is not exposed by this tool. Terminal backend APIs support create/list/input/output/resize/
 close/restart, but no frontend API selects the native Terminal tab or embeds
 BB's terminal renderer. Those actions are not added here. Arbitrary third-party
 plugin tabs are also outside the owner-scoped panel APIs.
@@ -132,3 +139,7 @@ Before merging, retest a real voice call:
    thread's diff. Check the configured browser destination, switch diff files,
    refresh after an edit, and keep talking. Reopen the same diff to verify it
    selects the existing tab. Confirm call controls remain usable.
+
+9. Ask “Preview README.md in this thread” and “Preview server.ts at line 40.”
+   Repeat from Handsfree with a named thread, and with a thread in a different
+   workspace. Confirm the correct file opens without changing the route.

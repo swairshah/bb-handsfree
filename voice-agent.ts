@@ -3,7 +3,7 @@
 // controls cross those boundaries, but opening views stays local to the caller.
 import { toast } from "sonner";
 import { desktopViews, DesktopViews, desktopDestination, DESKTOP_DEFAULTS, type CallOrigin } from "./desktop-views";
-import type { useRpc } from "@get-bb/plugin-sdk/app";
+import type { useRpc, ExperimentalFileOpenOptions } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "./server";
 import {
   audioCaptureConstraint,
@@ -79,6 +79,7 @@ export interface Bindings {
   /** Current-window navigation; never broadcast a desktop focus to other clients. */
   navigateToThread?: (threadId: string) => void;
   openUrl?: (url: string) => boolean;
+  previewFile?: (options: ExperimentalFileOpenOptions) => boolean;
   /** The host route, independent of an embedded composer's thread. */
   routeThreadId?: string | null;
 }
@@ -1002,6 +1003,22 @@ export class VoiceAgent {
     try {
       if (!bindings) {
         throw new Error("No bb surface is bound right now.");
+      } else if (name === "preview_file") {
+        if (clientDescriptor.mobile) throw new Error("File preview opening is desktop-only during a voice call.");
+        const threadId = args.thread_id === undefined ? context?.threadId : args.thread_id;
+        if (typeof threadId !== "string" || !threadId.trim()) throw new Error("Specify which thread's workspace contains this file.");
+        if (typeof args.path !== "string" || !args.path.trim()) throw new Error("Provide a workspace-relative file path.");
+        if (args.line !== undefined && (typeof args.line !== "number" || !Number.isSafeInteger(args.line) || args.line < 1)) {
+          throw new Error("The line number must be a positive integer.");
+        }
+        const target = await bindings.rpc.call("resolveFilePreview", { threadId, path: args.path });
+        if (dc.readyState !== "open" || this.nonce !== toolSessionId) throw new Error("The call ended before the file could be previewed.");
+        const location = typeof args.line === "number" ? { kind: "line" as const, line: args.line, column: null } : null;
+        if (!this.bindings?.previewFile?.({ target, location })) throw new Error("This screen declined the file-preview request.");
+        output = `File preview request accepted for ${target.path}${location ? ` at line ${location.line}` : ""}. BB will load the file; loading is not confirmed.`;
+        label = `Requested preview of ${target.path}`;
+        presentation = "panel";
+        status = "success";
       } else if (name === "open_browser") {
         if (clientDescriptor.mobile) throw new Error("Browser opening is desktop-only during a voice call.");
         if (typeof args.url !== "string" || !/^https?:\/\//i.test(args.url)) throw new Error("Provide a complete HTTP or HTTPS URL.");
