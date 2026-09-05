@@ -35,6 +35,13 @@ the reusable preview, and the fixed Thread view. Because BB returns only an
 acceptance boolean, a native-tab result says "opened or selected", not "created"
 or "selected existing" without evidence. Replacement results name both targets.
 
+Multiple-thread requests use one `focus_threads` batch, never a sequence of
+`focus_thread` navigation or preview replacements. Aide asks about opening them
+together in the side panel only when the destination is unclear; an explicit
+request for multiple tabs proceeds directly. It leaves the batch selection in
+place instead of focusing each result again. Sequential navigation is reserved
+for an explicitly requested walkthrough.
+
 Desktop `focus_threads` opens separate native side-panel tabs, regardless of the
 single-thread destination/tab preference. Existing tabs remain, duplicates are
 focused, and the first requested thread is selected. To show all running threads,
