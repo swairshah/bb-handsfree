@@ -30,6 +30,7 @@ function fixture(mobile = true, origin: CallOrigin = "composer") {
       preference: "reuse", desktop: preferences,
     };
     if (method === "runTool") return { output: JSON.stringify(args), status: "success" };
+    if (method === "getThreadDiff") return { title: "Target", shortstat: "1 file changed", files: [], truncated: false };
     return { ok: true };
   } } as Bindings["rpc"];
   const base: Bindings = { rpc, context: { threadId: "original", projectId: "original-project", onNewThreadScreen: false }, openNewThread() {}, routeThreadId: "original", navigateToThread: id => { navigated.push(id); agent.bind({ ...base, routeThreadId: id, context: { ...base.context, threadId: id } }); } };
@@ -45,6 +46,55 @@ function fixture(mobile = true, origin: CallOrigin = "composer") {
   };
   return { workspace, desktop, preferences, navigated, agent, internal, calls, sent, dc, base, execute };
 }
+
+test("browser opens are local, respect host acceptance, and reject unsupported URLs and mobile", async () => {
+  for (const origin of ["composer", "handsfree"] as const) {
+    const f = fixture(false, origin);
+    const urls: string[] = [];
+    f.agent.bind({ ...f.base, openUrl: url => { urls.push(url); return true; } });
+    const result = await f.execute("open_browser", { url: "https://example.com" });
+    assert.equal(result.status, "success");
+    assert.match(result.output, /preference.*not confirmed/);
+    assert.deepEqual(urls, ["https://example.com/"]);
+    for (const url of ["javascript:alert(1)", "file:///tmp/a", "example.com", "https://u:p@example.com", "https://"]) {
+      assert.equal((await f.execute("open_browser", { url })).status, "error");
+    }
+    assert.equal(urls.length, 1);
+    f.agent.bind({ ...f.base, openUrl: () => false });
+    assert.equal((await f.execute("open_browser", { url: "https://example.com" })).status, "error");
+    assert.equal(f.calls.some(call => call.method === "runTool"), false);
+    assert.deepEqual(f.navigated, []);
+  }
+  const mobile = fixture(true);
+  mobile.agent.bind({ ...mobile.base, openUrl: () => { throw new Error("Must not open"); } });
+  assert.match((await mobile.execute("open_browser", { url: "https://example.com" })).output, /desktop-only/);
+});
+
+test("desktop diff opens a local panel; decline and ended calls never fall back to navigation", async () => {
+  const f = fixture(false);
+  const opened: string[] = [];
+  f.desktop.registerPresenter({ kind: "thread", ownerId: "source", available: () => true, open: () => true,
+    openDiff: id => { opened.push(id); return true; } });
+  const result = await f.execute("show_diff", { thread_id: "a" });
+  assert.equal(result.status, "success");
+  assert.equal(result.presentation, "panel");
+  assert.deepEqual(opened, ["a"]);
+  f.desktop.registerPresenter({ kind: "page", ownerId: "page", available: () => true, open: () => true, openDiff: () => false });
+  assert.equal((await f.execute("show_diff", { thread_id: "b" })).status, "error");
+  const originalCall = f.base.rpc.call;
+  f.agent.bind({ ...f.base, rpc: { call: (async (method: any, args: any) => {
+    const result = await originalCall(method, args);
+    if (method === "getThreadDiff") f.internal.nonce = null;
+    return result;
+  }) as Bindings["rpc"]["call"] } });
+  assert.match((await f.execute("show_diff", { thread_id: "c" })).output, /call ended/);
+  assert.deepEqual(opened, ["a"]);
+  assert.deepEqual(f.navigated, []);
+  assert.equal(f.calls.some(call => call.method === "runTool"), false);
+  const mobile = fixture(true);
+  await mobile.execute("show_diff", { thread_id: "a" });
+  assert.equal(mobile.calls.find(call => call.method === "runTool")?.args.args.focus, false);
+});
 
 test("mobile openings use local drawers with correlated tool events", async () => {
   const f = fixture();

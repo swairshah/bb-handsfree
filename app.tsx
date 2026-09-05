@@ -21,8 +21,9 @@ import type { rpcContract } from "./server";
 import { clientDescriptor } from "./client-identity";
 import { voiceAgent } from "./voice-agent";
 import { SessionsPanel } from "./sessions-panel";
-import { desktopViews, DESKTOP_THREAD_ACTION } from "./desktop-views";
+import { desktopViews, DESKTOP_THREAD_ACTION, DESKTOP_DIFF_ACTION } from "./desktop-views";
 import { DESKTOP_FIXED_TAB, DesktopPageThread, DesktopThreadTab } from "./desktop-thread";
+import { DESKTOP_DIFF_TAB, DesktopDiffTab, DesktopPageDiff } from "./desktop-diff";
 import { viewWorkspace } from "./view-workspace";
 import { COMPANION_TAB, CompanionTab, THREAD_WORKSPACE_ACTION } from "./companion";
 import { AudioSettings, BehaviorSettings, ModelsSettings, ShortcutsSettings } from "./settings-sections";
@@ -68,6 +69,7 @@ function AideVoiceButton() {
         actionId: DESKTOP_THREAD_ACTION, title: reuse ? "Thread preview" : view.title,
         params: reuse ? { preview: true } : { threadId: view.threadId },
       }),
+      openDiff: (threadId, title) => navigate.openThreadPanel({ actionId: DESKTOP_DIFF_ACTION, title: `Diff · ${title}`, params: { threadId } }),
     });
   }, [navigate, scope.kind, effectiveThreadId, threadId]);
   const sidebarActions = experimental_useSidebarThreadActions();
@@ -128,6 +130,7 @@ function AideVoiceButton() {
     return voiceAgent.bind({
       rpc,
       navigateToThread: navigate.toThread,
+      openUrl: navigate.openUrl,
       routeThreadId: threadId,
       context: { threadId: effectiveThreadId, projectId: effectiveProjectId, onNewThreadScreen },
       composer: {
@@ -399,6 +402,11 @@ export default definePluginApp((app) => {
     run: context => { context.openPanel({ title: "Views", params: {} }); },
   });
   if (!clientDescriptor.mobile) app.slots.threadPanelAction({
+    id: DESKTOP_DIFF_ACTION, title: "Diff with Aide", icon: "GitCompare", layout: "flush",
+    component: DesktopDiffTab,
+    run: context => { context.openPanel({ title: "Workspace diff", params: { threadId: context.threadId } }); },
+  });
+  if (!clientDescriptor.mobile) app.slots.threadPanelAction({
     id: DESKTOP_THREAD_ACTION,
     title: "Thread with Aide",
     icon: "MessagesSquare",
@@ -426,6 +434,9 @@ export default definePluginApp((app) => {
     ] : [{
       ...DESKTOP_FIXED_TAB, title: "Thread", icon: "MessagesSquare",
       component: DesktopPageThread, layout: "flush",
+    }, {
+      ...DESKTOP_DIFF_TAB, title: "Diff", icon: "GitCompare",
+      component: DesktopPageDiff, layout: "flush",
     }],
   });
   // --- Global surface trial: multiple always-reachable triggers for the same

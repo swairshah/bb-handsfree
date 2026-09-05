@@ -16,6 +16,7 @@ import type { rpcContract } from "./server";
 import { clientDescriptor } from "./client-identity";
 import { desktopViews } from "./desktop-views";
 import { DESKTOP_FIXED_TAB } from "./desktop-thread";
+import { DESKTOP_DIFF_TAB } from "./desktop-diff";
 import { voiceAgent } from "./voice-agent";
 import { LiveCallControls, MicIcon, WaveformIcon } from "./voice-chrome";
 import { viewWorkspace } from "./view-workspace";
@@ -225,6 +226,7 @@ const ACTIONS: Record<string, { family: ActionFamily; verb: string }> = {
   set_view_behavior: { family: "self", verb: "Changed thread-opening preference" },
   set_pane: { family: "navigate", verb: "Changed the layout" },
   show_diff: { family: "navigate", verb: "Opened a diff" },
+  open_browser: { family: "navigate", verb: "Requested browser open" },
   send_to_thread: { family: "mutate", verb: "Sent a message" },
   start_thread: { family: "mutate", verb: "Started a thread" },
   stop_thread: { family: "mutate", verb: "Stopped a thread" },
@@ -596,6 +598,7 @@ export function SessionsPanel() {
     return voiceAgent.bindFallback({
       rpc,
       navigateToThread: navigate.toThread,
+      openUrl: navigate.openUrl,
       routeThreadId: threadId,
       context: { threadId: threadId ?? null, projectId: projectId ?? null, onNewThreadScreen: false },
       openNewThread: (targetProjectId) =>
@@ -615,6 +618,7 @@ export function SessionsPanel() {
     available: () => !clientDescriptor.mobile && document.visibilityState !== "hidden" &&
       !!scrollRef.current?.getClientRects().length && !scrollRef.current.closest('[inert], [aria-hidden="true"]'),
     open: view => appPanel.openFixedTab({ surface: { kind: "current" }, tab: DESKTOP_FIXED_TAB, target: { threadId: view.threadId } }),
+    openDiff: threadId => appPanel.openFixedTab({ surface: { kind: "current" }, tab: DESKTOP_DIFF_TAB, target: { threadId } }),
   }), [appPanel]);
   const [sessions, setSessions] = useState<SessionRow[] | null>(null);
   const [hasMore, setHasMore] = useState(false);

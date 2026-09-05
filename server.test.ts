@@ -3,6 +3,36 @@ import assert from "node:assert/strict";
 import { createFakePluginHost, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import plugin, { toolSchemas, threadViewInstructions } from "./server.ts";
 
+test("diff RPC resolves the thread workspace, loads patches on demand, and reports unavailable content", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "handsfree" });
+  let branch: string | null = "main";
+  let binary = false;
+  let unavailable = false;
+  harness.sdk.stub("threads.get", async () => makeThreadResponse({ id: "a", environmentId: "env", title: "A" }));
+  harness.sdk.stub("environments.get", async () => ({ mergeBaseBranch: branch }) as any);
+  harness.sdk.stub("environments.diffFiles", async () => unavailable ? ({ outcome: "not_applicable", message: "Not a git workspace", reason: "non_git_environment" }) : ({
+    outcome: "available", shortstat: "1 file changed", truncated: false, mergeBaseRef: "base",
+    files: [{ path: "a.txt", additions: 1, deletions: 1, binary, loadMode: "on_demand", changeKind: "modified", origin: "tracked", previousPath: null }], initialPatches: [],
+  }));
+  harness.sdk.stub("environments.diffPatch", async () => ({ outcome: "available", patches: [{ path: "a.txt", patch: "@@ -1 +1 @@\n-old\n+new\n", truncated: true }] }));
+  try {
+    await plugin(bb);
+    const diff = await harness.behavior.callRpc("getThreadDiff", { threadId: "a" }) as any;
+    assert.match(diff.patch, /\+new/);
+    assert.equal(diff.truncated, true);
+    assert.equal(diff.path, "a.txt");
+    assert.equal(harness.inspection.sdk.callsTo("threads.open").length, 0);
+    await assert.rejects(harness.behavior.callRpc("getThreadDiff", { threadId: "a", path: "missing" }), /no longer/);
+    branch = null; binary = true;
+    const binaryDiff = await harness.behavior.callRpc("getThreadDiff", { threadId: "a" }) as any;
+    assert.equal(binaryDiff.patch, null);
+    assert.match(binaryDiff.notice, /Binary/);
+    assert.equal(harness.inspection.sdk.callsTo("environments.diffPatch").length, 1);
+    unavailable = true;
+    await assert.rejects(harness.behavior.callRpc("getThreadDiff", { threadId: "a" }), /Not a git workspace/);
+  } finally { await harness.lifecycle.dispose(); }
+});
+
 test("session history and plugin logs describe the same stored action, and failed tools mark sessions", async () => {
   const { bb, harness } = createFakePluginHost({ pluginId: "handsfree" });
   try {
@@ -75,6 +105,8 @@ test("desktop tools expose destination overrides and native batches, independent
   assert.equal("destination" in focusMobile.parameters.properties, false);
   assert.ok(desktop.some(tool => tool.name === "focus_threads"));
   assert.ok(desktop.some(tool => tool.name === "set_desktop_behavior"));
+  assert.ok(desktop.some(tool => tool.name === "open_browser"));
+  assert.equal(mobile.some(tool => tool.name === "open_browser"), false);
   assert.equal(mobile.some(tool => tool.name === "set_desktop_behavior"), false);
   assert.equal("disposition" in focusMobile.parameters.properties, true);
   assert.match(threadViewInstructions(false), /call origin captured at startup/);

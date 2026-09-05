@@ -20,12 +20,14 @@ export function desktopDestination(origin: CallOrigin, override: unknown, config
 }
 
 export const DESKTOP_THREAD_ACTION = "desktop-thread";
+export const DESKTOP_DIFF_ACTION = "desktop-diff";
 export const DESKTOP_PAGE_TAB = { panelId: "sessions", id: "desktop-thread" } as const;
 type Presenter = {
   kind: "thread" | "page";
   ownerId: string;
   available(): boolean;
   open(view: ThreadView, reuse: boolean): boolean;
+  openDiff?(threadId: string, title: string): boolean;
 };
 
 /** Window-local destinations. BB owns native tabs, selection, and closure. */
@@ -52,6 +54,11 @@ export class DesktopViews {
   capabilities() {
     const presenter = this.presenter();
     return { sidePanel: !!presenter, nativeTabs: presenter?.kind === "thread" };
+  }
+  openDiff(threadId: string, title: string) {
+    const presenter = this.presenter();
+    if (!presenter?.openDiff) throw new Error("This screen has no available diff panel. Open a thread page or Handsfree and try again.");
+    if (!presenter.openDiff(threadId, title)) throw new Error("The current screen declined the diff-panel request.");
   }
   open(views: ThreadView[], disposition: "auto" | "reuse" | "new", preference: "reuse" | "new") {
     const presenter = this.presenter();

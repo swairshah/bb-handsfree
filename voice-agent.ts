@@ -78,6 +78,7 @@ export interface Bindings {
   openNewThread: (projectId: string | null) => void;
   /** Current-window navigation; never broadcast a desktop focus to other clients. */
   navigateToThread?: (threadId: string) => void;
+  openUrl?: (url: string) => boolean;
   /** The host route, independent of an embedded composer's thread. */
   routeThreadId?: string | null;
 }
@@ -1001,6 +1002,26 @@ export class VoiceAgent {
     try {
       if (!bindings) {
         throw new Error("No bb surface is bound right now.");
+      } else if (name === "open_browser") {
+        if (clientDescriptor.mobile) throw new Error("Browser opening is desktop-only during a voice call.");
+        if (typeof args.url !== "string" || !/^https?:\/\//i.test(args.url)) throw new Error("Provide a complete HTTP or HTTPS URL.");
+        const url = new URL(args.url);
+        if (url.username || url.password) throw new Error("Use a URL without embedded credentials.");
+        if (!bindings.openUrl?.(url.href)) throw new Error("This client declined the browser request.");
+        output = "Browser open request accepted using your BB browser preference. Page loading is not confirmed.";
+        label = "Requested browser open";
+        presentation = "browser";
+        status = "success";
+      } else if (!clientDescriptor.mobile && name === "show_diff") {
+        if (typeof args.thread_id !== "string" || !args.thread_id.trim()) throw new Error("Provide a valid thread ID.");
+        const diff = await bindings.rpc.call("getThreadDiff", { threadId: args.thread_id });
+        if (dc.readyState !== "open" || this.nonce !== toolSessionId) throw new Error("The call ended before the diff could be shown.");
+        this.desktop.openDiff(args.thread_id, diff.title);
+        output = JSON.stringify({ message: `Opened the diff panel for ${diff.title}.`, shortstat: diff.shortstat,
+          files: diff.files.slice(0, 50), truncated: diff.truncated });
+        label = `Showed diff for ${diff.title}`;
+        presentation = "panel";
+        status = "success";
       } else if (name === "set_composer_text") {
         if (!bindings.composer || (shown && bindings.context.threadId !== shown.threadId)) {
           throw new Error("No matching composer is available. Tap the shown thread’s composer to draft a message.");

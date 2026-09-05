@@ -25,9 +25,10 @@ test("the actual app registers distinct native desktop tabs and mobile drawers",
       const app = await loadPluginApp(async () => (loaded = await import(`${pathToFileURL(file).href}?mobile=${mobile}`)));
       const page = app.navPanels.find(panel => panel.id === "sessions");
       assert.ok(page);
-      assert.equal(page.fixedTabs?.length ?? 0, 1);
+      assert.equal(page.fixedTabs?.length ?? 0, mobile ? 1 : 2);
       assert.equal(page.fixedTabs?.[0].id, mobile ? "companion" : "desktop-thread");
       assert.equal(app.threadPanelActions.some(action => action.id === "desktop-thread"), !mobile);
+      assert.equal(app.threadPanelActions.some(action => action.id === "desktop-diff"), !mobile);
       assert.equal(app.threadPanelActions.some(action => action.id === "thread-workspace"), mobile);
       if (!mobile) {
         // Exercise the actual live composer control, not an idle-only ref.
@@ -38,12 +39,17 @@ test("the actual app registers distinct native desktop tabs and mobile drawers",
           context: { threadId: "source", projectId: "project" },
           composer: { scope: { kind: "thread", threadId: "source" } },
           openThreadPanel: () => true,
+          openUrl: () => true,
           rpc: { getConfig: () => ({ shortcuts: { toggle: "Mod+Shift+H", mute: "Mod+Shift+U" } }), logEvent: () => ({ ok: true }), requestPresence: () => ({ ok: true }) },
         });
         try {
           assert.ok(slot.getByRole("button", { name: "Mute Aide microphone" }));
           loaded.desktopViews.open([{ kind: "thread", id: "thread:target", threadId: "target", projectId: "project", title: "Target" }], "new", "new");
           assert.deepEqual(slot.inspection.navigateCalls.at(-1), { method: "openThreadPanel", options: { actionId: "desktop-thread", title: "Target", params: { threadId: "target" } } });
+          loaded.desktopViews.openDiff("target", "Target");
+          assert.deepEqual(slot.inspection.navigateCalls.at(-1), { method: "openThreadPanel", options: { actionId: "desktop-diff", title: "Diff · Target", params: { threadId: "target" } } });
+          assert.equal(loaded.voiceAgent.bindings.openUrl("https://example.com/"), true);
+          assert.deepEqual(slot.inspection.navigateCalls.at(-1), { method: "openUrl", url: "https://example.com/" });
           slot.container.setAttribute("data-handsfree-desktop-thread", "embedded");
           assert.throws(() => loaded.desktopViews.open([{ threadId: "other" }], "new", "new"), /no available side panel/);
         } finally {
