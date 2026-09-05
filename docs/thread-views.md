@@ -41,6 +41,14 @@ in a footer outside the scrolling thread. It shares the Aide page's controls and
 call state. Controls remain available when switching or closing thread views,
 including after closing the last view; ending the call hides them.
 
+The content height is capped to the visual viewport below the drawer's own
+top edge. This keeps the embedded reply field and call controls above an iOS
+keyboard when BB's portaled drawer retains its full height. Viewport resize,
+pan, and host resize update that cap without remounting the chat or touching
+its draft/focus. Pinch zoom retains the host's normal layout. Native iOS still
+needs a device regression check; a browser fixture cannot reproduce its audio
+or keyboard lifecycle.
+
 ## Desktop compatibility
 
 The frontend sends its mobile classification at call creation. Desktop sessions

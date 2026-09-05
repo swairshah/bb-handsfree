@@ -6,6 +6,7 @@ import type { ExperimentalPluginFixedTabReference } from "@get-bb/plugin-sdk/app
 import { viewWorkspace } from "./view-workspace";
 import { voiceAgent } from "./voice-agent";
 import { LiveCallControls } from "./voice-chrome";
+import { useDrawerViewport } from "./hooks/useDrawerViewport";
 
 export const COMPANION_TAB: ExperimentalPluginFixedTabReference = { panelId: "sessions", id: "companion" };
 export const THREAD_WORKSPACE_ACTION = "thread-workspace";
@@ -24,12 +25,13 @@ export function CompanionTab() {
   const { views, activeId } = useSyncExternalStore(viewWorkspace.subscribe, viewWorkspace.get);
   const callState = useSyncExternalStore(voiceAgent.subscribe, voiceAgent.getState);
   const root = useRef<HTMLDivElement>(null);
+  useDrawerViewport(root);
   const active = views.find(view => view.id === activeId);
   useEffect(() => viewWorkspace.registerVisiblePanel(() =>
     document.visibilityState !== "hidden" && !!root.current?.getClientRects().length,
   ), []);
   return (
-    <div ref={root} data-handsfree-workspace className="flex h-full min-h-0 flex-col">
+    <div ref={root} data-handsfree-workspace className="flex h-full min-h-0 flex-col overflow-hidden">
       {active ? <>
         <div className="flex shrink-0 items-center gap-2 border-b border-border p-2">
           <select aria-label="Shown thread" value={activeId ?? ""} onChange={event => viewWorkspace.select(event.target.value)}
