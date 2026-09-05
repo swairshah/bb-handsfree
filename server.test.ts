@@ -61,18 +61,23 @@ test("server tool failures carry explicit status and do not create a separate se
   } finally { await harness.lifecycle.dispose(); }
 });
 
-test("desktop calls retain the original focus tool and exclude mobile-only controls", () => {
+test("desktop tools expose destination overrides and native batches, independently of mobile tools", () => {
   const desktop = toolSchemas([], false);
   const mobile = toolSchemas([], true);
-  for (const name of ["focus_threads", "manage_views", "set_view_behavior"]) {
+  for (const name of ["manage_views", "set_view_behavior"]) {
     assert.equal(desktop.some(tool => tool.name === name), false);
     assert.equal(mobile.some(tool => tool.name === name), true);
   }
   const focusDesktop = desktop.find(tool => tool.name === "focus_thread") as any;
   const focusMobile = mobile.find(tool => tool.name === "focus_thread") as any;
-  assert.equal("disposition" in focusDesktop.parameters.properties, false);
+  assert.equal("disposition" in focusDesktop.parameters.properties, true);
+  assert.equal("destination" in focusDesktop.parameters.properties, true);
+  assert.equal("destination" in focusMobile.parameters.properties, false);
+  assert.ok(desktop.some(tool => tool.name === "focus_threads"));
+  assert.ok(desktop.some(tool => tool.name === "set_desktop_behavior"));
+  assert.equal(mobile.some(tool => tool.name === "set_desktop_behavior"), false);
   assert.equal("disposition" in focusMobile.parameters.properties, true);
-  assert.match(threadViewInstructions(false), /navigates to the requested thread/);
+  assert.match(threadViewInstructions(false), /call origin captured at startup/);
   assert.match(threadViewInstructions(true), /do not navigate away/);
   assert.deepEqual(toolSchemas(), desktop);
 });
@@ -91,7 +96,7 @@ test("mobile settings never replace desktop navigation and migrate the prototype
   } finally { await harness.lifecycle.dispose(); }
 });
 
-test("desktop focus still opens the real bb thread through the original SDK operation", async () => {
+test("legacy server focus remains available for old frontends", async () => {
   const { bb, harness } = createFakePluginHost({ pluginId: "handsfree", sdk: {
     threads: { open: async () => ({ delivered: 1 }) },
   } });
@@ -102,5 +107,26 @@ test("desktop focus still opens the real bb thread through the original SDK oper
     }) as any;
     assert.deepEqual(result, { output: "Focused.", status: "success" });
     assert.equal(harness.inspection.sdk.callsTo("threads.open").length, 1);
+  } finally { await harness.lifecycle.dispose(); }
+});
+
+
+test("desktop settings persist per origin and remain independent of mobile preferences", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "handsfree" });
+  try {
+    await plugin(bb);
+    const initial = await harness.behavior.callRpc("getConfig", null) as any;
+    assert.equal(initial.desktopComposerDestination, "navigate");
+    assert.equal(initial.desktopAideDestination, "panel");
+    assert.equal(initial.desktopTabBehavior, "new");
+    const result = await harness.behavior.callRpc("runTool", { name: "set_desktop_behavior", args: { composer_destination: "panel", tab_behavior: "reuse" }, threadId: null, projectId: null }) as any;
+    assert.equal(result.status, "success");
+    const saved = await harness.behavior.callRpc("getConfig", null) as any;
+    assert.equal(saved.desktopComposerDestination, "panel");
+    assert.equal(saved.desktopAideDestination, "panel");
+    assert.equal(saved.desktopTabBehavior, "reuse");
+    assert.equal(saved.mobileViewBehavior, initial.mobileViewBehavior);
+    assert.equal((await harness.behavior.callRpc("runTool", { name: "set_desktop_behavior", args: {}, threadId: null, projectId: null }) as any).status, "error");
+    await assert.rejects(harness.behavior.callRpc("setConfig", { desktopAideDestination: "drawer" }));
   } finally { await harness.lifecycle.dispose(); }
 });

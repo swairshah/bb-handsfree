@@ -1,25 +1,17 @@
 // Mobile-only host drawer, with a window-local collection of typed views.
 // Additional first-party renderers can join WorkspaceView when bb supports them.
-import React, { Component, useEffect, useRef, useSyncExternalStore, type ReactNode } from "react";
+import React, { useEffect, useRef, useSyncExternalStore } from "react";
 import { ThreadChat } from "@get-bb/plugin-sdk/app";
 import type { ExperimentalPluginFixedTabReference } from "@get-bb/plugin-sdk/app";
 import { viewWorkspace } from "./view-workspace";
 import { voiceAgent } from "./voice-agent";
 import { LiveCallControls } from "./voice-chrome";
+import { ViewErrorBoundary } from "./thread-view-boundary";
 import { useDrawerViewport } from "./hooks/useDrawerViewport";
 
 export const COMPANION_TAB: ExperimentalPluginFixedTabReference = { panelId: "sessions", id: "companion" };
 export const THREAD_WORKSPACE_ACTION = "thread-workspace";
 
-class ViewErrorBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
-  state = { failed: false };
-  static getDerivedStateFromError() { return { failed: true }; }
-  render() {
-    return this.state.failed
-      ? <p role="alert" className="p-4 text-sm text-destructive">This thread could not be displayed. Close it and try opening it again.</p>
-      : this.props.children;
-  }
-}
 
 export function CompanionTab() {
   const { views, activeId } = useSyncExternalStore(viewWorkspace.subscribe, viewWorkspace.get);

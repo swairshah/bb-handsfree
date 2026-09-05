@@ -8,12 +8,14 @@ import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "
 import {
   experimental_useAppPanel,
   experimental_useSidebarThreadActions,
-  useBbContext,
+  useBbContext, useBbNavigate,
   useRealtime,
   useRpc,
 } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "./server";
 import { clientDescriptor } from "./client-identity";
+import { desktopViews } from "./desktop-views";
+import { DESKTOP_FIXED_TAB } from "./desktop-thread";
 import { voiceAgent } from "./voice-agent";
 import { LiveCallControls, MicIcon, WaveformIcon } from "./voice-chrome";
 import { viewWorkspace } from "./view-workspace";
@@ -156,7 +158,7 @@ function CallConsole({ onViewTranscript, selectedId }: { onViewTranscript: (sess
         type="button"
         aria-label="Start Aide voice agent"
         title="Talk to Aide"
-        onClick={() => voiceAgent.toggleFromSurface()}
+        onClick={() => voiceAgent.toggleFromSurface("handsfree")}
         className={cn(
           "flex h-11 items-center gap-2 rounded-full border border-border bg-card px-5 text-sm font-medium text-foreground shadow-lg transition-colors hover:bg-accent",
           connecting && "animate-pulse",
@@ -579,6 +581,7 @@ export function SessionsPanel() {
   const { threadId, projectId } = useBbContext();
   const sidebarActions = experimental_useSidebarThreadActions();
   const appPanel = experimental_useAppPanel();
+  const navigate = useBbNavigate();
   useEscapeToClose();
 
   // The Handsfree page has no composer, so nothing else binds the voice agent
@@ -592,6 +595,8 @@ export function SessionsPanel() {
   useEffect(() => {
     return voiceAgent.bindFallback({
       rpc,
+      navigateToThread: navigate.toThread,
+      routeThreadId: threadId,
       context: { threadId: threadId ?? null, projectId: projectId ?? null, onNewThreadScreen: false },
       openNewThread: (targetProjectId) =>
         sidebarActions.openNewThread({
@@ -599,11 +604,17 @@ export function SessionsPanel() {
           focusPrompt: true,
         }),
     });
-  }, [rpc, threadId, projectId, sidebarActions]);
+  }, [rpc, threadId, projectId, sidebarActions, navigate]);
 
   useEffect(() => viewWorkspace.registerPresenter({
     available: () => clientDescriptor.mobile && document.visibilityState !== "hidden",
     reveal: () => appPanel.openFixedTab({ surface: { kind: "current" }, tab: COMPANION_TAB }),
+  }), [appPanel]);
+  useEffect(() => desktopViews.registerPresenter({
+    kind: "page", ownerId: "handsfree",
+    available: () => !clientDescriptor.mobile && document.visibilityState !== "hidden" &&
+      !!scrollRef.current?.getClientRects().length && !scrollRef.current.closest('[inert], [aria-hidden="true"]'),
+    open: view => appPanel.openFixedTab({ surface: { kind: "current" }, tab: DESKTOP_FIXED_TAB, target: { threadId: view.threadId } }),
   }), [appPanel]);
   const [sessions, setSessions] = useState<SessionRow[] | null>(null);
   const [hasMore, setHasMore] = useState(false);

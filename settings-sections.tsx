@@ -28,6 +28,7 @@ import {
   type RealtimeModel,
   type Voice,
 } from "./models";
+import { DESKTOP_DEFAULTS, type DesktopPreferences } from "./desktop-views";
 import { voiceAgent } from "./voice-agent";
 import { deviceDisplayLabel } from "./audio-devices";
 import {
@@ -49,7 +50,7 @@ import { cn } from "@/lib/utils";
 
 type CredentialPreference = "auto" | "apiKey" | "subscription";
 
-interface VoiceConfig {
+interface VoiceConfig extends DesktopPreferences {
   model: RealtimeModel;
   voice: Voice;
   notifications: boolean;
@@ -328,7 +329,32 @@ export function BehaviorSettings() {
     <div className="space-y-5">
       <PromptEditor />
 
-      <Group label="Mobile thread drawer" hint="On mobile, show threads without leaving the call. Desktop still navigates directly to threads.">
+      <Group label="Desktop thread opening" hint="Defaults follow where you started the call, even after moving between pages. You can override them for one action by voice.">
+        {([
+          ["desktopComposerDestination", "Calls started from a composer"],
+          ["desktopAideDestination", "Calls started from the Aide page"],
+        ] as const).map(([key, label]) => (
+          <label key={key} className="block space-y-1 text-sm">
+            <span>{label}</span>
+            <select className={selectClass} disabled={loading} value={config?.[key] ?? DESKTOP_DEFAULTS[key]}
+              onChange={event => void update({ [key]: event.target.value as "navigate" | "panel" })}>
+              <option value="navigate">Navigate to the thread</option>
+              <option value="panel">Show in the side panel</option>
+            </select>
+          </label>
+        ))}
+        <label className="block space-y-1 text-sm">
+          <span>Thread-page side panels</span>
+          <select className={selectClass} disabled={loading} value={config?.desktopTabBehavior ?? "new"}
+            onChange={event => void update({ desktopTabBehavior: event.target.value as "reuse" | "new" })}>
+            <option value="new">Keep each thread in a separate tab</option>
+            <option value="reuse">Replace the preview thread</option>
+          </select>
+        </label>
+        <p className="text-xs text-muted-foreground">The Aide page shows one side-panel thread. Multiple tabs are available from existing thread pages. Sidebar and keyboard starts default to navigation.</p>
+      </Group>
+
+      <Group label="Mobile thread drawer" hint="On mobile, show threads without leaving the call. Desktop preferences do not affect the drawer.">
         <label htmlFor="handsfree-view-behavior" className="mb-2 block text-sm">When showing a thread on mobile</label>
         <select id="handsfree-view-behavior" className={selectClass} disabled={loading} value={config?.mobileViewBehavior ?? "reuse"}
           onChange={event => void update({ mobileViewBehavior: event.target.value as VoiceConfig["mobileViewBehavior"] })}>

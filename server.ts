@@ -19,6 +19,7 @@ import {
   type RealtimeModel,
   type Voice,
 } from "./models";
+import { DESKTOP_DEFAULTS, type DesktopPreferences } from "./desktop-views";
 import { sessionEventLog } from "./session-events.ts";
 import { DEFAULT_SHORTCUTS, isValidShortcut, normalizeShortcuts, type Shortcuts } from "./shortcuts";
 
@@ -46,6 +47,7 @@ export const rpcContract = defineRpcContract({
         onNewThreadScreen: z.boolean().optional(),
         /** Device policy is fixed for the call, independently of its entry point. */
         mobile: z.boolean().optional(),
+        callOrigin: z.enum(["composer", "handsfree", "global"]).optional(),
         /** Unique per call; broadcast so every other window ends its session. */
         nonce: z.string().min(1),
       })
@@ -124,6 +126,9 @@ export const rpcContract = defineRpcContract({
         voice: z.enum(VOICE_OPTIONS),
         notifications: z.boolean(),
         mobileViewBehavior: z.enum(["reuse", "new"]),
+        desktopComposerDestination: z.enum(["navigate", "panel"]),
+        desktopAideDestination: z.enum(["navigate", "panel"]),
+        desktopTabBehavior: z.enum(["reuse", "new"]),
         pluginCommands: z.string(),
         credentialPreference: z.enum(["auto", "apiKey", "subscription"]),
         shortcuts: shortcutsSchema,
@@ -138,6 +143,9 @@ export const rpcContract = defineRpcContract({
         voice: z.enum(VOICE_OPTIONS).optional(),
         notifications: z.boolean().optional(),
         mobileViewBehavior: z.enum(["reuse", "new"]).optional(),
+        desktopComposerDestination: z.enum(["navigate", "panel"]).optional(),
+        desktopAideDestination: z.enum(["navigate", "panel"]).optional(),
+        desktopTabBehavior: z.enum(["reuse", "new"]).optional(),
         pluginCommands: z.string().max(2000).optional(),
         credentialPreference: z.enum(["auto", "apiKey", "subscription"]).optional(),
         shortcuts: shortcutsSchema.optional(),
@@ -149,6 +157,9 @@ export const rpcContract = defineRpcContract({
         voice: z.enum(VOICE_OPTIONS),
         notifications: z.boolean(),
         mobileViewBehavior: z.enum(["reuse", "new"]),
+        desktopComposerDestination: z.enum(["navigate", "panel"]),
+        desktopAideDestination: z.enum(["navigate", "panel"]),
+        desktopTabBehavior: z.enum(["reuse", "new"]),
         pluginCommands: z.string(),
         credentialPreference: z.enum(["auto", "apiKey", "subscription"]),
         shortcuts: shortcutsSchema,
@@ -253,6 +264,11 @@ export const rpcContract = defineRpcContract({
         projectId: z.string().nullable(), title: z.string(),
       }).strict()),
       preference: z.enum(["reuse", "new"]),
+      desktop: z.object({
+        desktopComposerDestination: z.enum(["navigate", "panel"]),
+        desktopAideDestination: z.enum(["navigate", "panel"]),
+        desktopTabBehavior: z.enum(["reuse", "new"]),
+      }).strict(),
     }).strict(),
   },
   /**
@@ -413,10 +429,11 @@ export function toolSchemas(pluginCommands: PluginCommandInfo[] = [], mobile = f
     { type: "function", name: "list_threads", description: "List recent bb threads (id, title, status). Optionally filter by project id.", parameters: { type: "object", properties: { project_id: { type: "string" }, limit: { type: "number", description: "Max threads to return (default 15)." } } } },
     { type: "function", name: "search_threads", description: "Full-text search bb threads by title/content. Returns matching thread ids and titles.", parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"] } },
     { type: "function", name: "read_thread", description: "Read a thread's details and its latest assistant output.", parameters: { type: "object", properties: { thread_id: { type: "string" } }, required: ["thread_id"] } },
-    { type: "function", name: "focus_thread", description: mobile ? "Show a thread in the mobile drawer without leaving the call. Reopening a thread selects its existing view. disposition: auto uses the mobile preference, reuse replaces the active view, new keeps existing views." : "Open/focus a thread in the user's bb app window, navigating to that thread.", parameters: { type: "object", properties: { thread_id: { type: "string" }, ...(mobile ? { disposition: { type: "string", enum: ["auto", "reuse", "new"] } } : {}) }, required: ["thread_id"] } },
-    { type: "function", name: "focus_threads", description: "Show several threads in the mobile drawer switcher, preserving existing views. To show all running threads, first call list_live_threads and exclude recently-finished entries; pass their IDs here. Up to 100 per batch; split larger lists into batches.", parameters: { type: "object", properties: { thread_ids: { type: "array", items: { type: "string" }, minItems: 1, maxItems: 100 } }, required: ["thread_ids"] } },
+    { type: "function", name: "focus_thread", description: mobile ? "Show a thread in the mobile drawer without leaving the call. disposition: auto uses the mobile preference, reuse replaces the active view, new keeps existing views." : "Show a thread on the calling desktop. destination auto follows the saved preference for where this call started; navigate moves the workspace; panel opens beside it. Use explicit destination only when the user asks for it. disposition applies to side panels: auto uses the preference, reuse replaces the preview, new opens a native thread-page tab. Aide page supports a single side-panel view, not new native tabs.", parameters: { type: "object", properties: { thread_id: { type: "string" }, disposition: { type: "string", enum: ["auto", "reuse", "new"] }, ...(!mobile ? { destination: { type: "string", enum: ["auto", "navigate", "panel"] } } : {}) }, required: ["thread_id"] } },
+    { type: "function", name: "focus_threads", description: mobile ? "Show several threads in the mobile drawer switcher, preserving existing views. For all running threads, call list_live_threads and exclude recently-finished entries. Up to 100 per batch." : "Open several threads as separate native side-panel tabs on the current thread page, preserving existing tabs and selecting the first requested thread. Available only from existing thread pages, not the Aide page. For all running threads, first call list_live_threads and exclude recently-finished entries. Up to 100 per batch.", parameters: { type: "object", properties: { thread_ids: { type: "array", items: { type: "string" }, minItems: 1, maxItems: 100 } }, required: ["thread_ids"] } },
+    { type: "function", name: "set_desktop_behavior", description: "Save desktop opening preferences only when the user explicitly asks for a lasting change. composer_destination and aide_destination choose navigate or panel. tab_behavior chooses reuse or new for thread-page side panels. Does not affect mobile. Pass only requested changes.", parameters: { type: "object", properties: { composer_destination: { type: "string", enum: ["navigate", "panel"] }, aide_destination: { type: "string", enum: ["navigate", "panel"] }, tab_behavior: { type: "string", enum: ["reuse", "new"] } } } },
     { type: "function", name: "manage_views", description: "List, select, or close the views in the mobile drawer. Get view IDs using list. clear closes all views only when the user asks. Closing a view does not stop its thread or the call.", parameters: { type: "object", properties: { action: { type: "string", enum: ["list", "select", "close", "clear"] }, view_id: { type: "string" } }, required: ["action"] } },
-    { type: "function", name: "set_view_behavior", description: "Save how future mobile drawer opens behave. Use only when the user asks for a lasting mobile preference: reuse replaces the active view; new keeps views in the switcher. Desktop always navigates normally. Explicit mobile requests and batches override this preference.", parameters: { type: "object", properties: { behavior: { type: "string", enum: ["reuse", "new"] } }, required: ["behavior"] } },
+    { type: "function", name: "set_view_behavior", description: "Save how future mobile drawer opens behave. Use only when the user asks for a lasting mobile preference: reuse replaces the active view; new keeps views in the switcher. Desktop preferences are separate. Explicit mobile requests and batches override this preference.", parameters: { type: "object", properties: { behavior: { type: "string", enum: ["reuse", "new"] } }, required: ["behavior"] } },
     { type: "function", name: "set_pane", description: "Change a thread pane's presentation in the bb app: spotlight, clear-spotlight, maximize, restore, or toggle.", parameters: { type: "object", properties: { thread_id: { type: "string" }, action: { type: "string", enum: ["spotlight", "clear-spotlight", "maximize", "restore", "toggle"] } }, required: ["thread_id", "action"] } },
     { type: "function", name: "send_to_thread", description: "Send a message to a thread's agent. Starts a turn if idle, queues/steers if running.", parameters: { type: "object", properties: { thread_id: { type: "string" }, message: { type: "string" } }, required: ["thread_id", "message"] } },
     { type: "function", name: "start_thread", description: "Start a new agent thread in a project. Only pass prompt when the user dictated actual work; With no prompt, this opens bb's New thread screen for the user to type their own. Runs on the project's default machine unless machine_id is given — if the project lives on several connected machines and the user didn't say which, check list_machines and ask one short question instead of guessing.", parameters: { type: "object", properties: { project_id: { type: "string", description: "Project id; defaults to the user's current project." }, prompt: { type: "string", description: "The user's own instruction for the agent, verbatim. Omit if they didn't give one." }, title: { type: "string" }, machine_id: { type: "string", description: "Machine (host) id to run on, from list_machines. Omit to use the project's default machine." } } } },
@@ -428,13 +445,13 @@ export function toolSchemas(pluginCommands: PluginCommandInfo[] = [], mobile = f
     // Handled locally in the bb app frontend, never reaches runTool:
     { type: "function", name: "set_composer_text", description: "Replace the text in the user's message composer (the box they type prompts into).", parameters: { type: "object", properties: { text: { type: "string" } }, required: ["text"] } },
     { type: "function", name: "append_composer_text", description: "Append text to the user's message composer.", parameters: { type: "object", properties: { text: { type: "string" } }, required: ["text"] } },
-  ].filter(tool => mobile || !["focus_threads", "manage_views", "set_view_behavior"].includes(tool.name));
+  ].filter(tool => mobile ? tool.name !== "set_desktop_behavior" : !["manage_views", "set_view_behavior"].includes(tool.name));
 }
 
 export function threadViewInstructions(mobile: boolean) {
   return mobile
     ? "Mobile thread views: focus_thread shows a thread in the drawer without navigating away from the call. disposition new preserves other views and reuse replaces the selected view. focus_threads opens a batch into the drawer switcher, not separate native bb tabs. For all running threads, use list_live_threads and exclude recently-finished entries. Use manage_views to list, select, or close mobile views. Use set_view_behavior only for an explicitly requested lasting mobile preference. Call get_context for the thread currently shown. If the drawer is unavailable, report the limitation; do not navigate away from the mobile call."
-    : "Desktop navigation: focus_thread opens and navigates to the requested thread, as usual, regardless of where the call started. There is no desktop companion-view mode in this version. Call get_context after navigation for the current thread. Mobile drawer preferences do not apply to desktop.";
+    : "Desktop navigation: focus_thread destination auto follows the saved preference for the call origin captured at startup. Calls from the composer default to navigating; calls from Aide default to its single side-panel view; global/sidebar starts default to navigation. Explicit requests to navigate or show beside the call override the default for that action only. focus_threads opens real native side-panel tabs on existing thread pages. The Aide page supports only one side-panel thread, not multiple native tabs; report that limit instead of replacing a batch with one view or navigating without being asked. Native tab close/reorder controls belong to BB and are not voice tools in this version. Call get_context for current visible-thread context and side-panel capabilities. Use set_desktop_behavior only for explicitly requested lasting preferences. Never claim an open succeeded before the tool result. Mobile drawer preferences do not apply to desktop.";
 }
 
 const DEFAULT_PROMPT = `You are Aide, a concise voice operator for bb — the user's agentic IDE where coding agents run in threads inside projects.
@@ -505,7 +522,7 @@ export default async function plugin(bb: BbPluginApi) {
   const isCredentialPreference = (value: unknown): value is CredentialPreference =>
     typeof value === "string" && (CREDENTIAL_PREFERENCES as readonly string[]).includes(value);
 
-  interface VoiceConfig {
+  interface VoiceConfig extends DesktopPreferences {
     model: RealtimeModel;
     voice: Voice;
     notifications: boolean;
@@ -516,6 +533,7 @@ export default async function plugin(bb: BbPluginApi) {
   }
   const CONFIG_KEY = "config";
   const CONFIG_DEFAULTS: VoiceConfig = {
+    ...DESKTOP_DEFAULTS,
     model: DEFAULT_MODEL,
     voice: DEFAULT_VOICE,
     notifications: true,
@@ -531,6 +549,9 @@ export default async function plugin(bb: BbPluginApi) {
       voice: isVoice(stored.voice) ? stored.voice : CONFIG_DEFAULTS.voice,
       notifications:
         typeof stored.notifications === "boolean" ? stored.notifications : CONFIG_DEFAULTS.notifications,
+      desktopComposerDestination: stored.desktopComposerDestination === "panel" ? "panel" : "navigate",
+      desktopAideDestination: stored.desktopAideDestination === "navigate" ? "navigate" : "panel",
+      desktopTabBehavior: stored.desktopTabBehavior === "reuse" ? "reuse" : "new",
       mobileViewBehavior: (stored.mobileViewBehavior ?? stored.viewBehavior) === "new" ? "new" : "reuse",
       pluginCommands:
         typeof stored.pluginCommands === "string" ? stored.pluginCommands : CONFIG_DEFAULTS.pluginCommands,
@@ -926,6 +947,23 @@ export default async function plugin(bb: BbPluginApi) {
         const [described] = await withMachines([describeThread(thread)]);
         return JSON.stringify({ ...described, lastAssistantOutput: output ? truncate(output) : null });
       }
+      case "set_desktop_behavior": {
+        const patch: Partial<DesktopPreferences> = {};
+        for (const [arg, key] of [["composer_destination", "desktopComposerDestination"], ["aide_destination", "desktopAideDestination"]] as const) {
+          if (args[arg] !== undefined) {
+            if (args[arg] !== "navigate" && args[arg] !== "panel") throw new Error("Invalid desktop destination.");
+            patch[key] = args[arg] as "navigate" | "panel";
+          }
+        }
+        if (args.tab_behavior !== undefined) {
+          if (args.tab_behavior !== "reuse" && args.tab_behavior !== "new") throw new Error("Invalid desktop tab behavior.");
+          patch.desktopTabBehavior = args.tab_behavior;
+        }
+        if (!Object.keys(patch).length) throw new Error("Specify a desktop preference to change.");
+        await writeConfig(patch);
+        bb.realtime.publish("config-changed", {});
+        return "Saved desktop opening preferences. Mobile behavior is unchanged.";
+      }
       case "set_view_behavior": {
         const behavior = str("behavior");
         if (behavior !== "reuse" && behavior !== "new") throw new Error("Invalid view behavior.");
@@ -1177,7 +1215,7 @@ export default async function plugin(bb: BbPluginApi) {
   });
 
   bb.rpc.register(rpcContract, {
-    async createCall({ sdp, threadId, projectId, onNewThreadScreen, nonce, mobile = false }) {
+    async createCall({ sdp, threadId, projectId, onNewThreadScreen, nonce, mobile = false, callOrigin = "global" }) {
       const key = await apiKey();
       const { model, voice } = await readConfig();
       const pluginCommands = await exposedPluginCommands();
@@ -1188,7 +1226,7 @@ export default async function plugin(bb: BbPluginApi) {
       const session = {
         type: "realtime",
         model,
-        instructions: `${activePrompt()}${pluginSection}\n\n${threadViewInstructions(mobile)}\n\nCurrent context: threadId=${threadId ?? "none"}, projectId=${projectId ?? "none"}${onNewThreadScreen ? " — the user is on the New thread screen (no thread exists yet; they're composing the prompt for one)" : ""}. Call get_context for fresh context — the user navigates while talking.`,
+        instructions: `${activePrompt()}${pluginSection}\n\n${threadViewInstructions(mobile)}\n\nCall origin: ${callOrigin}.\n\nCurrent context: threadId=${threadId ?? "none"}, projectId=${projectId ?? "none"}${onNewThreadScreen ? " — the user is on the New thread screen (no thread exists yet; they're composing the prompt for one)" : ""}. Call get_context for fresh context — the user navigates while talking.`,
         audio: {
           input: {
             noise_reduction: { type: "near_field" },
@@ -1226,7 +1264,7 @@ export default async function plugin(bb: BbPluginApi) {
       return { sdp: text };
     },
     async getTools() {
-      const local = new Set(["set_composer_text", "append_composer_text"]);
+      const local = new Set(["focus_thread", "focus_threads", "set_composer_text", "append_composer_text"]);
       const pluginCommands = await exposedPluginCommands();
       return {
         tools: toolSchemas(pluginCommands).map((tool) => ({
@@ -1342,7 +1380,12 @@ export default async function plugin(bb: BbPluginApi) {
             projectId: thread.projectId, title: thread.title || thread.titleFallback || threadId };
         })));
       }
-      return { views, preference: (await readConfig()).mobileViewBehavior };
+      const config = await readConfig();
+      return { views, preference: config.mobileViewBehavior, desktop: {
+        desktopComposerDestination: config.desktopComposerDestination,
+        desktopAideDestination: config.desktopAideDestination,
+        desktopTabBehavior: config.desktopTabBehavior,
+      } };
     },
     async forceStop({ nonce }) {
       // Durable end-marker so listSessions stops showing it live even if the
