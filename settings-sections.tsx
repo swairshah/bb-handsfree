@@ -402,7 +402,7 @@ export function DefaultBehaviorSettings() {
 
   return (
     <div className={cn(settingsCardClass, "space-y-5")}>
-      <p className="text-xs text-muted-foreground">Choose where Aide shows threads during a call.</p>
+      <p className="text-xs text-muted-foreground">Choose where Aide opens things during a call.</p>
       <Group label="Desktop">
         {([
           ["desktopComposerDestination", "When starting from the composer"],

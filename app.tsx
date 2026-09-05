@@ -382,7 +382,7 @@ export default definePluginApp((app) => {
   });
   app.slots.settingsSection({
     id: "default-behavior",
-    title: "Default behavior",
+    title: "Navigation & views",
     component: DefaultBehaviorSettings,
   });
   app.slots.settingsSection({
