@@ -74,10 +74,24 @@ saves that preference; an explicit request can override it. The collection lasts
 for the current app session. Supported destinations are the Handsfree page and
 existing thread panels; unsupported mobile surfaces report the limitation.
 
-Desktop `focus_thread` continues navigating to the requested thread from both
-the composer and Handsfree page. Mobile settings do not change that behavior.
-Per-entry-point desktop navigation/side-panel settings and native multi-tab
-behavior are a [separate design](docs/desktop-navigation-plan.md).
+## Desktop navigation and side panels
+
+Calls started from a composer keep the original “take me there” navigation.
+Calls started from the Handsfree page show a thread beside the call by default.
+Behavior → Desktop thread opening lets you choose Navigate / Side panel for
+these two entry points separately. The call remembers its entry point as you
+move around; sidebar and keyboard starts default to navigation.
+
+“Take me there” and “show it beside the call” override the destination for one
+action. On an existing thread page, “open all my running threads” creates real
+BB side-panel tabs, deduplicates repeated threads, and selects the first one.
+Choose separate tabs or a reusable preview for individual side-panel requests.
+BB owns tab closing and reordering. The Aide page supports **one** side-panel
+thread; requests for multiple native tabs there explain the limitation without
+navigating or replacing the request with a dropdown.
+
+Desktop opening requests are local to the calling window. Mobile settings and
+safety remain independent. See [desktop behavior and validation](docs/desktop-navigation-plan.md).
 
 See [the mobile design and device checklist](docs/thread-views.md) for SDK limits
 and the shared session/plugin logging behavior.
@@ -180,5 +194,6 @@ bb plugin dev          # rebuild + reload on save
 bb plugin logs handsfree -f # tool traffic and errors
 ```
 
-Mobile calls additionally expose `focus_threads`, `manage_views`, and
+Both devices expose `focus_threads` with their respective presentation. Desktop
+calls also expose `set_desktop_behavior`; mobile calls expose `manage_views` and
 `set_view_behavior` for the drawer. Desktop retains its navigation tool set.

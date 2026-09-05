@@ -6,7 +6,7 @@
 // bb SDK (threads, projects, diffs, panes).
 import { readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, posix, win32 } from "node:path";
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import {
@@ -19,6 +19,8 @@ import {
   type RealtimeModel,
   type Voice,
 } from "./models";
+import { DESKTOP_DEFAULTS, type DesktopPreferences } from "./desktop-views";
+import { readThreadDiff } from "./desktop-diff-data";
 import { sessionEventLog } from "./session-events.ts";
 import { DEFAULT_SHORTCUTS, isValidShortcut, normalizeShortcuts, type Shortcuts } from "./shortcuts";
 
@@ -35,6 +37,27 @@ const shortcutsSchema = z
   .strict();
 
 export const rpcContract = defineRpcContract({
+  resolveFilePreview: {
+    input: z.object({
+      threadId: z.string().min(1),
+      asHostFile: z.boolean().optional(),
+      path: z.string().min(1).refine(path => !path.startsWith("/") && !/^[a-z][a-z0-9+.-]*:/i.test(path) &&
+        !/[\\\u0000]/.test(path) && path.split("/").every(part => !!part && part !== "." && part !== ".."),
+      "Use a workspace-relative file path without traversal, such as src/app.ts."),
+    }).strict(),
+    output: z.union([
+      z.object({ kind: z.literal("workspace"), environmentId: z.string(), path: z.string() }).strict(),
+      z.object({ kind: z.literal("host"), hostId: z.string(), path: z.string() }).strict(),
+    ]),
+  },
+  getThreadDiff: {
+    input: z.object({ threadId: z.string().min(1), path: z.string().min(1).optional() }).strict(),
+    output: z.object({
+      threadId: z.string(), projectId: z.string(), title: z.string(), shortstat: z.string(),
+      files: z.array(z.object({ path: z.string(), additions: z.number(), deletions: z.number() }).strict()),
+      path: z.string().nullable(), patch: z.string().nullable(), notice: z.string().nullable(), truncated: z.boolean(),
+    }).strict(),
+  },
   /** Exchange a WebRTC SDP offer with OpenAI Realtime. Returns the answer. */
   createCall: {
     input: z
@@ -46,6 +69,7 @@ export const rpcContract = defineRpcContract({
         onNewThreadScreen: z.boolean().optional(),
         /** Device policy is fixed for the call, independently of its entry point. */
         mobile: z.boolean().optional(),
+        callOrigin: z.enum(["composer", "handsfree", "global"]).optional(),
         /** Unique per call; broadcast so every other window ends its session. */
         nonce: z.string().min(1),
       })
@@ -124,6 +148,9 @@ export const rpcContract = defineRpcContract({
         voice: z.enum(VOICE_OPTIONS),
         notifications: z.boolean(),
         mobileViewBehavior: z.enum(["reuse", "new"]),
+        desktopComposerDestination: z.enum(["navigate", "panel"]),
+        desktopAideDestination: z.enum(["navigate", "panel"]),
+        desktopTabBehavior: z.enum(["reuse", "new"]),
         pluginCommands: z.string(),
         credentialPreference: z.enum(["auto", "apiKey", "subscription"]),
         shortcuts: shortcutsSchema,
@@ -138,6 +165,9 @@ export const rpcContract = defineRpcContract({
         voice: z.enum(VOICE_OPTIONS).optional(),
         notifications: z.boolean().optional(),
         mobileViewBehavior: z.enum(["reuse", "new"]).optional(),
+        desktopComposerDestination: z.enum(["navigate", "panel"]).optional(),
+        desktopAideDestination: z.enum(["navigate", "panel"]).optional(),
+        desktopTabBehavior: z.enum(["reuse", "new"]).optional(),
         pluginCommands: z.string().max(2000).optional(),
         credentialPreference: z.enum(["auto", "apiKey", "subscription"]).optional(),
         shortcuts: shortcutsSchema.optional(),
@@ -149,6 +179,9 @@ export const rpcContract = defineRpcContract({
         voice: z.enum(VOICE_OPTIONS),
         notifications: z.boolean(),
         mobileViewBehavior: z.enum(["reuse", "new"]),
+        desktopComposerDestination: z.enum(["navigate", "panel"]),
+        desktopAideDestination: z.enum(["navigate", "panel"]),
+        desktopTabBehavior: z.enum(["reuse", "new"]),
         pluginCommands: z.string(),
         credentialPreference: z.enum(["auto", "apiKey", "subscription"]),
         shortcuts: shortcutsSchema,
@@ -253,6 +286,11 @@ export const rpcContract = defineRpcContract({
         projectId: z.string().nullable(), title: z.string(),
       }).strict()),
       preference: z.enum(["reuse", "new"]),
+      desktop: z.object({
+        desktopComposerDestination: z.enum(["navigate", "panel"]),
+        desktopAideDestination: z.enum(["navigate", "panel"]),
+        desktopTabBehavior: z.enum(["reuse", "new"]),
+      }).strict(),
     }).strict(),
   },
   /**
@@ -413,28 +451,42 @@ export function toolSchemas(pluginCommands: PluginCommandInfo[] = [], mobile = f
     { type: "function", name: "list_threads", description: "List recent bb threads (id, title, status). Optionally filter by project id.", parameters: { type: "object", properties: { project_id: { type: "string" }, limit: { type: "number", description: "Max threads to return (default 15)." } } } },
     { type: "function", name: "search_threads", description: "Full-text search bb threads by title/content. Returns matching thread ids and titles.", parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"] } },
     { type: "function", name: "read_thread", description: "Read a thread's details and its latest assistant output.", parameters: { type: "object", properties: { thread_id: { type: "string" } }, required: ["thread_id"] } },
-    { type: "function", name: "focus_thread", description: mobile ? "Show a thread in the mobile drawer without leaving the call. Reopening a thread selects its existing view. disposition: auto uses the mobile preference, reuse replaces the active view, new keeps existing views." : "Open/focus a thread in the user's bb app window, navigating to that thread.", parameters: { type: "object", properties: { thread_id: { type: "string" }, ...(mobile ? { disposition: { type: "string", enum: ["auto", "reuse", "new"] } } : {}) }, required: ["thread_id"] } },
-    { type: "function", name: "focus_threads", description: "Show several threads in the mobile drawer switcher, preserving existing views. To show all running threads, first call list_live_threads and exclude recently-finished entries; pass their IDs here. Up to 100 per batch; split larger lists into batches.", parameters: { type: "object", properties: { thread_ids: { type: "array", items: { type: "string" }, minItems: 1, maxItems: 100 } }, required: ["thread_ids"] } },
+    { type: "function", name: "focus_thread", description: mobile ? "Show a thread in the mobile drawer without leaving the call. disposition: auto uses the mobile preference, reuse replaces the active view, new keeps existing views." : "Show one thread on the calling desktop. For a request to open multiple threads/tabs, use one focus_threads batch instead of repeated focus_thread calls. destination auto follows the saved preference for where this call started; navigate moves the workspace; panel opens beside it. Use explicit destination only when the user asks for it. disposition applies to side panels: auto uses the preference, reuse replaces the preview, new opens a native thread-page tab. Aide page supports a single side-panel view, not new native tabs.", parameters: { type: "object", properties: { thread_id: { type: "string" }, disposition: { type: "string", enum: ["auto", "reuse", "new"] }, ...(!mobile ? { destination: { type: "string", enum: ["auto", "navigate", "panel"] } } : {}) }, required: ["thread_id"] } },
+    { type: "function", name: "focus_threads", description: mobile ? "Show several threads in the mobile drawer switcher, preserving existing views. For all running threads, call list_live_threads and exclude recently-finished entries. Up to 100 per batch." : "Use one batch call for requests to open multiple threads/tabs; do not cycle through focus_thread calls. Opens separate native side-panel tabs on the current thread page, preserving existing tabs and selecting the first requested thread. Available only from existing thread pages, not the Aide page. For all running threads, first call list_live_threads and exclude recently-finished entries. Up to 100 per batch.", parameters: { type: "object", properties: { thread_ids: { type: "array", items: { type: "string" }, minItems: 1, maxItems: 100 } }, required: ["thread_ids"] } },
+    { type: "function", name: "set_desktop_behavior", description: "Save desktop opening preferences only when the user explicitly asks for a lasting change. composer_destination and aide_destination choose navigate or panel. tab_behavior chooses reuse or new for thread-page side panels. Does not affect mobile. Pass only requested changes.", parameters: { type: "object", properties: { composer_destination: { type: "string", enum: ["navigate", "panel"] }, aide_destination: { type: "string", enum: ["navigate", "panel"] }, tab_behavior: { type: "string", enum: ["reuse", "new"] } } } },
     { type: "function", name: "manage_views", description: "List, select, or close the views in the mobile drawer. Get view IDs using list. clear closes all views only when the user asks. Closing a view does not stop its thread or the call.", parameters: { type: "object", properties: { action: { type: "string", enum: ["list", "select", "close", "clear"] }, view_id: { type: "string" } }, required: ["action"] } },
-    { type: "function", name: "set_view_behavior", description: "Save how future mobile drawer opens behave. Use only when the user asks for a lasting mobile preference: reuse replaces the active view; new keeps views in the switcher. Desktop always navigates normally. Explicit mobile requests and batches override this preference.", parameters: { type: "object", properties: { behavior: { type: "string", enum: ["reuse", "new"] } }, required: ["behavior"] } },
+    { type: "function", name: "set_view_behavior", description: "Save how future mobile drawer opens behave. Use only when the user asks for a lasting mobile preference: reuse replaces the active view; new keeps views in the switcher. Desktop preferences are separate. Explicit mobile requests and batches override this preference.", parameters: { type: "object", properties: { behavior: { type: "string", enum: ["reuse", "new"] } }, required: ["behavior"] } },
     { type: "function", name: "set_pane", description: "Change a thread pane's presentation in the bb app: spotlight, clear-spotlight, maximize, restore, or toggle.", parameters: { type: "object", properties: { thread_id: { type: "string" }, action: { type: "string", enum: ["spotlight", "clear-spotlight", "maximize", "restore", "toggle"] } }, required: ["thread_id", "action"] } },
     { type: "function", name: "send_to_thread", description: "Send a message to a thread's agent. Starts a turn if idle, queues/steers if running.", parameters: { type: "object", properties: { thread_id: { type: "string" }, message: { type: "string" } }, required: ["thread_id", "message"] } },
     { type: "function", name: "start_thread", description: "Start a new agent thread in a project. Only pass prompt when the user dictated actual work; With no prompt, this opens bb's New thread screen for the user to type their own. Runs on the project's default machine unless machine_id is given — if the project lives on several connected machines and the user didn't say which, check list_machines and ask one short question instead of guessing.", parameters: { type: "object", properties: { project_id: { type: "string", description: "Project id; defaults to the user's current project." }, prompt: { type: "string", description: "The user's own instruction for the agent, verbatim. Omit if they didn't give one." }, title: { type: "string" }, machine_id: { type: "string", description: "Machine (host) id to run on, from list_machines. Omit to use the project's default machine." } } } },
     { type: "function", name: "stop_thread", description: "Stop a running thread.", parameters: { type: "object", properties: { thread_id: { type: "string" } }, required: ["thread_id"] } },
     { type: "function", name: "archive_thread", description: "Archive a thread (and its children).", parameters: { type: "object", properties: { thread_id: { type: "string" } }, required: ["thread_id"] } },
     { type: "function", name: "rename_thread", description: "Rename a thread.", parameters: { type: "object", properties: { thread_id: { type: "string" }, title: { type: "string" } }, required: ["thread_id", "title"] } },
-    { type: "function", name: "show_diff", description: "Summarize a thread's workspace diff (changed files, additions/deletions) and focus the thread so the user can see it.", parameters: { type: "object", properties: { thread_id: { type: "string" } }, required: ["thread_id"] } },
+    { type: "function", name: "show_diff", description: mobile ? "Summarize a thread's workspace diff without navigating away from the mobile call." : "Show a workspace diff in a side-panel tab without navigating. Optional path selects that changed file in the diff (not the full file preview). Optional thread_id defaults to the currently shown thread. Returns a changed-file summary. Supports thread pages and Aide.", parameters: { type: "object", properties: { thread_id: { type: "string" }, ...(!mobile ? { path: { type: "string", description: "Workspace-relative changed-file path." } } : {}) }, ...(mobile ? { required: ["thread_id"] } : {}) } },
+    { type: "function", name: "open_browser", description: "Open an HTTP(S) URL on the calling desktop using BB's saved browser preference (BB browser or external browser). Cannot force the built-in browser, confirm page load, or read/control the page. Does not change preferences. Use only when the user asks to open a URL.", parameters: { type: "object", properties: { url: { type: "string", description: "Complete http:// or https:// URL." } }, required: ["url"] } },
     { type: "function", name: "update_instructions", description: "Amend your own standing instructions (the system prompt for future voice sessions). Pass the COMPLETE new instructions text, not a diff. Use only when the user asks for a lasting behavior change.", parameters: { type: "object", properties: { instructions: { type: "string", description: "The full replacement instructions." }, reason: { type: "string", description: "One short sentence: why, quoting the user's request." } }, required: ["instructions", "reason"] } },
+    { type: "function", name: "preview_file", description: "Request BB's native file preview in the calling desktop window. path must be a known workspace-relative file path (e.g. README.md or src/app.ts), not a URL or an absolute path. Optional thread_id chooses the workspace; omit for the current thread. Optional line reveals a one-based line number. Opens a preview without navigating the thread or using an external editor. Host acceptance does not confirm the file exists or has loaded. Ask for the path/thread if unclear; do not guess filenames.", parameters: { type: "object", properties: { path: { type: "string" }, thread_id: { type: "string" }, line: { type: "integer", minimum: 1 } }, required: ["path"] } },
     // Handled locally in the bb app frontend, never reaches runTool:
     { type: "function", name: "set_composer_text", description: "Replace the text in the user's message composer (the box they type prompts into).", parameters: { type: "object", properties: { text: { type: "string" } }, required: ["text"] } },
     { type: "function", name: "append_composer_text", description: "Append text to the user's message composer.", parameters: { type: "object", properties: { text: { type: "string" } }, required: ["text"] } },
-  ].filter(tool => mobile || !["focus_threads", "manage_views", "set_view_behavior"].includes(tool.name));
+  ].filter(tool => mobile ? !["set_desktop_behavior", "open_browser", "preview_file"].includes(tool.name) : !["manage_views", "set_view_behavior"].includes(tool.name));
 }
 
 export function threadViewInstructions(mobile: boolean) {
-  return mobile
-    ? "Mobile thread views: focus_thread shows a thread in the drawer without navigating away from the call. disposition new preserves other views and reuse replaces the selected view. focus_threads opens a batch into the drawer switcher, not separate native bb tabs. For all running threads, use list_live_threads and exclude recently-finished entries. Use manage_views to list, select, or close mobile views. Use set_view_behavior only for an explicitly requested lasting mobile preference. Call get_context for the thread currently shown. If the drawer is unavailable, report the limitation; do not navigate away from the mobile call."
-    : "Desktop navigation: focus_thread opens and navigates to the requested thread, as usual, regardless of where the call started. There is no desktop companion-view mode in this version. Call get_context after navigation for the current thread. Mobile drawer preferences do not apply to desktop.";
+  if (mobile) return "Mobile thread views: focus_thread shows a thread in the drawer without navigating away from the call. disposition new preserves other views and reuse replaces the selected view. focus_threads opens a batch into the drawer switcher, not separate native bb tabs. For all running threads, use list_live_threads and exclude recently-finished entries. Use manage_views to list, select, or close mobile views. Use set_view_behavior only for an explicitly requested lasting mobile preference. Call get_context for the thread currently shown. If the drawer is unavailable, report the limitation; do not navigate away from the mobile call.";
+  return `Desktop navigation:
+- Use the call origin captured at startup for saved defaults. Composer calls default to workspace navigation, Aide calls to its fixed Thread view, and global/sidebar calls to navigation. Later navigation never changes that origin.
+- An ordinary unambiguous "show/open X" follows the saved default. Do not ask on every request. If the user's intent is ambiguous between moving the workspace, adding a side-panel tab, or replacing a view, ask one short question before acting, offering only choices supported on this screen. You can ask directly in conversation; no tool is needed to ask.
+- "Navigate/take me to X" means destination navigate. "Beside/in the side panel" means destination panel. "Also/as well/keep the other one/new tab" means destination panel and disposition new, preserving existing tabs. "Replace the preview" means destination panel and disposition reuse. If "replace this tab" could mean a dedicated native tab, clarify: reuse targets the reusable Thread preview, not arbitrary native tabs.
+- For "open these five threads", "open multiple tabs", or "show all my running threads", collect the requested IDs and call focus_threads once. Multiple-thread requests use side-panel tabs even when the single-thread default is workspace navigation. Never fulfill them by cycling through focus_thread calls, sequential workspace navigation, or repeated preview replacement. If the destination is unclear, ask "Should I open them all together as side-panel tabs?"; if the user already asked for tabs or the side panel, open the batch directly. After the batch succeeds, leave its selected thread in place; do not focus every result again. Navigate through threads one at a time only when the user explicitly asks for a sequential walkthrough.
+- focus_threads preserves existing tabs on thread pages. Aide's own page supports one fixed Thread view; it cannot add multiple native thread tabs. If adding is unavailable, ask whether to replace that Thread view or navigate to a thread page. Never silently reinterpret an additive request as replacement.
+- If a tool reports clarification needed, nothing changed. Ask the user, then retry with their chosen destination/disposition. Do not retry a declined action with guessed arguments. Changing Aide's existing fixed Thread target requires explicit disposition reuse after the user requests replacement.
+- Describe the exact tool outcome: navigated the workspace, opened/selected separate side-panel tabs (existing tabs kept), selected/updated the reusable Thread preview, or replaced the fixed Handsfree Thread view. BB does not distinguish newly created tabs from already-existing tabs in its return value; never invent that distinction or say a view is "alongside" another when it replaced it.
+- Call get_context for current visible-thread context and side-panel capabilities. Use set_desktop_behavior only for explicitly requested lasting preferences. Per-request choices never change saved preferences. Mobile drawer preferences do not apply to desktop.
+- open_browser follows the client browser preference and reports request acceptance, not page load; it cannot force internal/external or control the page.
+- show_diff opens a diff panel without navigating. To show changes to a specific file, pass its workspace-relative path to show_diff; do not substitute preview_file, which shows the full file. Ask if a named file is ambiguous or absent from the changed-file list.
+- preview_file opens a known workspace-relative file with optional line and thread_id. Ask for missing paths/context rather than inventing them. A declined preview does not mean a plugin is missing. Offer navigation to the owning thread or opening from Handsfree if the current screen cannot accept it; never navigate automatically.
+- Native tab closure/reordering, Terminal-tab opening, and arbitrary plugin-tab opening are not available through these tools. Never claim an open succeeded before the tool result.`;
 }
 
 const DEFAULT_PROMPT = `You are Aide, a concise voice operator for bb — the user's agentic IDE where coding agents run in threads inside projects.
@@ -442,11 +494,11 @@ const DEFAULT_PROMPT = `You are Aide, a concise voice operator for bb — the us
 The user talks to you to drive bb hands-free. You can list/search/read threads, focus them on screen, spotlight or maximize panes, send messages to agent threads, start new threads, stop or archive threads, summarize diffs, and edit the user's prompt composer.
 
 Rules:
-- Be extremely succinct. One short sentence by default ("Done.", "Focused.", "Sent."). Never narrate what you're about to do, never enumerate options, never restate the user's request. Add detail only when asked.
+- Be extremely succinct. One short sentence by default ("Done.", "Focused.", "Sent."). Never narrate what you're about to do, offer choices only when needed for a short clarification, never restate the user's request. Add detail only when asked.
 - Thread ids look like thr_x… and project ids like proj_x…. When the user names a thread by topic or title, find it with list_threads or search_threads first.
 - Never invent prompts, titles, or messages on the user's behalf. If required information is missing, ask one short question.
 - When reading agent output aloud, give a one-or-two-sentence summary; never read code or ids verbatim.
-- Prefer focus_thread so the user sees what you are talking about.
+- For a single thread, prefer focus_thread so the user sees what you are talking about. For multiple threads requested together, use one focus_threads batch; do not focus each thread in turn.
 - While a voice session is active, bb sends you updates when visible threads finish or fail (when Announcements is enabled). You can notify the user: if they ask to be told when a thread finishes, say yes, then announce the update in one short sentence when it arrives. Always name the thread by its title in that sentence; several threads may be running, so a bare "it finished" is ambiguous. Never claim that you cannot notify them, and do not poll the thread.
 - Threads run on a machine. start_thread uses the project's default machine unless you pass machine_id — when the project is on several connected machines and the user didn't name one, use list_machines and ask one short question (e.g. "On your MacBook or the studio?") before starting.
 - When the user asks you to permanently behave differently ("always …", "from now on …"), use update_instructions to amend these standing instructions.`;
@@ -505,7 +557,7 @@ export default async function plugin(bb: BbPluginApi) {
   const isCredentialPreference = (value: unknown): value is CredentialPreference =>
     typeof value === "string" && (CREDENTIAL_PREFERENCES as readonly string[]).includes(value);
 
-  interface VoiceConfig {
+  interface VoiceConfig extends DesktopPreferences {
     model: RealtimeModel;
     voice: Voice;
     notifications: boolean;
@@ -516,6 +568,7 @@ export default async function plugin(bb: BbPluginApi) {
   }
   const CONFIG_KEY = "config";
   const CONFIG_DEFAULTS: VoiceConfig = {
+    ...DESKTOP_DEFAULTS,
     model: DEFAULT_MODEL,
     voice: DEFAULT_VOICE,
     notifications: true,
@@ -531,6 +584,9 @@ export default async function plugin(bb: BbPluginApi) {
       voice: isVoice(stored.voice) ? stored.voice : CONFIG_DEFAULTS.voice,
       notifications:
         typeof stored.notifications === "boolean" ? stored.notifications : CONFIG_DEFAULTS.notifications,
+      desktopComposerDestination: stored.desktopComposerDestination === "panel" ? "panel" : "navigate",
+      desktopAideDestination: stored.desktopAideDestination === "navigate" ? "navigate" : "panel",
+      desktopTabBehavior: stored.desktopTabBehavior === "reuse" ? "reuse" : "new",
       mobileViewBehavior: (stored.mobileViewBehavior ?? stored.viewBehavior) === "new" ? "new" : "reuse",
       pluginCommands:
         typeof stored.pluginCommands === "string" ? stored.pluginCommands : CONFIG_DEFAULTS.pluginCommands,
@@ -926,6 +982,23 @@ export default async function plugin(bb: BbPluginApi) {
         const [described] = await withMachines([describeThread(thread)]);
         return JSON.stringify({ ...described, lastAssistantOutput: output ? truncate(output) : null });
       }
+      case "set_desktop_behavior": {
+        const patch: Partial<DesktopPreferences> = {};
+        for (const [arg, key] of [["composer_destination", "desktopComposerDestination"], ["aide_destination", "desktopAideDestination"]] as const) {
+          if (args[arg] !== undefined) {
+            if (args[arg] !== "navigate" && args[arg] !== "panel") throw new Error("Invalid desktop destination.");
+            patch[key] = args[arg] as "navigate" | "panel";
+          }
+        }
+        if (args.tab_behavior !== undefined) {
+          if (args.tab_behavior !== "reuse" && args.tab_behavior !== "new") throw new Error("Invalid desktop tab behavior.");
+          patch.desktopTabBehavior = args.tab_behavior;
+        }
+        if (!Object.keys(patch).length) throw new Error("Specify a desktop preference to change.");
+        await writeConfig(patch);
+        bb.realtime.publish("config-changed", {});
+        return "Saved desktop opening preferences. Mobile behavior is unchanged.";
+      }
       case "set_view_behavior": {
         const behavior = str("behavior");
         if (behavior !== "reuse" && behavior !== "new") throw new Error("Invalid view behavior.");
@@ -1177,7 +1250,20 @@ export default async function plugin(bb: BbPluginApi) {
   });
 
   bb.rpc.register(rpcContract, {
-    async createCall({ sdp, threadId, projectId, onNewThreadScreen, nonce, mobile = false }) {
+    async resolveFilePreview({ threadId, path, asHostFile }) {
+      const environmentId = await resolveEnvironmentId(threadId);
+      if (!environmentId) throw new Error("This thread has no workspace to preview files from.");
+      if (asHostFile) {
+        const environment = await bb.sdk.environments.get({ environmentId });
+        const root = environment.path;
+        if (!root || (!posix.isAbsolute(root) && !win32.isAbsolute(root))) throw new Error("This workspace has no resolved absolute path for a native file preview.");
+        return { kind: "host" as const, hostId: environment.hostId,
+          path: posix.isAbsolute(root) ? posix.join(root, path) : win32.join(root, path) };
+      }
+      return { kind: "workspace" as const, environmentId, path };
+    },
+    async getThreadDiff({ threadId, path }) { return readThreadDiff(bb, threadId, path); },
+    async createCall({ sdp, threadId, projectId, onNewThreadScreen, nonce, mobile = false, callOrigin = "global" }) {
       const key = await apiKey();
       const { model, voice } = await readConfig();
       const pluginCommands = await exposedPluginCommands();
@@ -1188,7 +1274,7 @@ export default async function plugin(bb: BbPluginApi) {
       const session = {
         type: "realtime",
         model,
-        instructions: `${activePrompt()}${pluginSection}\n\n${threadViewInstructions(mobile)}\n\nCurrent context: threadId=${threadId ?? "none"}, projectId=${projectId ?? "none"}${onNewThreadScreen ? " — the user is on the New thread screen (no thread exists yet; they're composing the prompt for one)" : ""}. Call get_context for fresh context — the user navigates while talking.`,
+        instructions: `${activePrompt()}${pluginSection}\n\n${threadViewInstructions(mobile)}\n\nCall origin: ${callOrigin}.\n\nCurrent context: threadId=${threadId ?? "none"}, projectId=${projectId ?? "none"}${onNewThreadScreen ? " — the user is on the New thread screen (no thread exists yet; they're composing the prompt for one)" : ""}. Call get_context for fresh context — the user navigates while talking.`,
         audio: {
           input: {
             noise_reduction: { type: "near_field" },
@@ -1226,7 +1312,7 @@ export default async function plugin(bb: BbPluginApi) {
       return { sdp: text };
     },
     async getTools() {
-      const local = new Set(["set_composer_text", "append_composer_text"]);
+      const local = new Set(["focus_thread", "focus_threads", "show_diff", "open_browser", "preview_file", "set_composer_text", "append_composer_text"]);
       const pluginCommands = await exposedPluginCommands();
       return {
         tools: toolSchemas(pluginCommands).map((tool) => ({
@@ -1342,7 +1428,12 @@ export default async function plugin(bb: BbPluginApi) {
             projectId: thread.projectId, title: thread.title || thread.titleFallback || threadId };
         })));
       }
-      return { views, preference: (await readConfig()).mobileViewBehavior };
+      const config = await readConfig();
+      return { views, preference: config.mobileViewBehavior, desktop: {
+        desktopComposerDestination: config.desktopComposerDestination,
+        desktopAideDestination: config.desktopAideDestination,
+        desktopTabBehavior: config.desktopTabBehavior,
+      } };
     },
     async forceStop({ nonce }) {
       // Durable end-marker so listSessions stops showing it live even if the

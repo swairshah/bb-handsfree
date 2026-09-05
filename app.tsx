@@ -21,9 +21,12 @@ import type { rpcContract } from "./server";
 import { clientDescriptor } from "./client-identity";
 import { voiceAgent } from "./voice-agent";
 import { SessionsPanel } from "./sessions-panel";
+import { desktopViews, DESKTOP_THREAD_ACTION, DESKTOP_DIFF_ACTION } from "./desktop-views";
+import { DESKTOP_FIXED_TAB, DesktopPageThread, DesktopThreadTab } from "./desktop-thread";
+import { DESKTOP_DIFF_TAB, DesktopDiffTab, DesktopPageDiff } from "./desktop-diff";
 import { viewWorkspace } from "./view-workspace";
 import { COMPANION_TAB, CompanionTab, THREAD_WORKSPACE_ACTION } from "./companion";
-import { AudioSettings, BehaviorSettings, ModelsSettings, ShortcutsSettings } from "./settings-sections";
+import { AudioSettings, BehaviorSettings, DefaultBehaviorSettings, ModelsSettings, ShortcutsSettings } from "./settings-sections";
 import { cn } from "@/lib/utils";
 import { AUDIO_DEVICE_STORAGE_KEY } from "./audio-devices";
 import { MicIcon, StopIcon, WaveformIcon, useCallElapsed } from "./voice-chrome";
@@ -54,6 +57,19 @@ function AideVoiceButton() {
       available: () => document.visibilityState !== "hidden" && !!surface.current &&
         !surface.current.closest("[data-handsfree-workspace]"),
       reveal: () => navigate.openThreadPanel({ actionId: THREAD_WORKSPACE_ACTION, title: "Views", params: {} }),
+    });
+  }, [navigate, scope.kind, effectiveThreadId, threadId]);
+  useEffect(() => {
+    if (clientDescriptor.mobile || scope.kind !== "thread" || scope.threadId !== threadId) return;
+    return desktopViews.registerPresenter({
+      kind: "thread", ownerId: threadId,
+      available: () => document.visibilityState !== "hidden" && !!surface.current?.getClientRects().length &&
+        !surface.current.closest('[data-handsfree-desktop-thread], [inert], [aria-hidden="true"]'),
+      open: (view, reuse) => navigate.openThreadPanel({
+        actionId: DESKTOP_THREAD_ACTION, title: reuse ? "Thread preview" : view.title,
+        params: reuse ? { preview: true } : { threadId: view.threadId },
+      }),
+      openDiff: (threadId, title) => navigate.openThreadPanel({ actionId: DESKTOP_DIFF_ACTION, title: `Diff · ${title}`, params: { threadId } }),
     });
   }, [navigate, scope.kind, effectiveThreadId, threadId]);
   const sidebarActions = experimental_useSidebarThreadActions();
@@ -113,6 +129,10 @@ function AideVoiceButton() {
   useEffect(() => {
     return voiceAgent.bind({
       rpc,
+      navigateToThread: navigate.toThread,
+      openUrl: navigate.openUrl,
+      previewFile: navigate.experimental_openFilePreview,
+      routeThreadId: threadId,
       context: { threadId: effectiveThreadId, projectId: effectiveProjectId, onNewThreadScreen },
       composer: {
         setText: (text) => composer.setText(text),
@@ -124,7 +144,7 @@ function AideVoiceButton() {
           focusPrompt: true,
         }),
     });
-  }, [rpc, composer, effectiveThreadId, effectiveProjectId, onNewThreadScreen, sidebarActions]);
+  }, [rpc, composer, effectiveThreadId, effectiveProjectId, onNewThreadScreen, sidebarActions, navigate, threadId]);
 
   const live = state === "live";
   const muted = state === "muted";
@@ -152,7 +172,11 @@ function AideVoiceButton() {
             ? "Muted"
             : "Connected";
     return (
-      <div className="flex h-7 shrink-0 items-center overflow-hidden rounded-full border border-border bg-accent">
+      <div
+        // Keep the desktop presenter attached when Start becomes live controls.
+        // Mobile composer presentation remains outside this desktop change.
+        ref={clientDescriptor.mobile ? undefined : node => { surface.current = node; }}
+        className="flex h-7 shrink-0 items-center overflow-hidden rounded-full border border-border bg-accent">
         <button
           type="button"
           aria-label={muted ? "Unmute Aide microphone" : "Mute Aide microphone"}
@@ -208,7 +232,7 @@ function AideVoiceButton() {
       aria-label="Start Aide voice agent"
       title={`Talk to Aide (${toggleHint})`}
       onPointerDown={(event) => event.button === 0 && event.preventDefault()}
-      onClick={() => voiceAgent.toggleFromSurface()}
+      onClick={() => voiceAgent.toggleFromSurface("composer")}
       className={cn(
         "flex size-7 shrink-0 items-center justify-center rounded-full border transition-colors",
         state === "connecting"
@@ -357,6 +381,11 @@ export default definePluginApp((app) => {
     component: BehaviorSettings,
   });
   app.slots.settingsSection({
+    id: "default-behavior",
+    title: "Navigation & views",
+    component: DefaultBehaviorSettings,
+  });
+  app.slots.settingsSection({
     id: "audio",
     title: "Audio",
     component: AudioSettings,
@@ -378,6 +407,19 @@ export default definePluginApp((app) => {
     component: CompanionTab,
     run: context => { context.openPanel({ title: "Views", params: {} }); },
   });
+  if (!clientDescriptor.mobile) app.slots.threadPanelAction({
+    id: DESKTOP_DIFF_ACTION, title: "Diff with Aide", icon: "GitCompare", layout: "flush",
+    component: DesktopDiffTab,
+    run: context => { context.openPanel({ title: "Workspace diff", params: { threadId: context.threadId } }); },
+  });
+  if (!clientDescriptor.mobile) app.slots.threadPanelAction({
+    id: DESKTOP_THREAD_ACTION,
+    title: "Thread with Aide",
+    icon: "MessagesSquare",
+    layout: "flush",
+    component: DesktopThreadTab,
+    run: context => { context.openPanel({ title: "Thread preview", params: { preview: true } }); },
+  });
   app.slots.navPanel({
     id: "sessions",
     title: "Handsfree",
@@ -385,8 +427,8 @@ export default definePluginApp((app) => {
     path: "sessions",
     component: SessionsPanel,
     experimental_sidebarAccessory: SidebarLiveIndicator,
-    // Registration is collected in each client: desktop keeps its original
-    // panel chrome, while mobile gains a call-safe drawer view.
+    // Each device registers its own presentation. Desktop uses one fixed
+    // Aide-page view; separate native tabs are registered on thread pages.
     fixedTabs: clientDescriptor.mobile ? [
       {
         ...COMPANION_TAB,
@@ -395,7 +437,13 @@ export default definePluginApp((app) => {
         component: CompanionTab,
         layout: "flush",
       },
-    ] : [],
+    ] : [{
+      ...DESKTOP_FIXED_TAB, title: "Thread", icon: "MessagesSquare",
+      component: DesktopPageThread, layout: "flush",
+    }, {
+      ...DESKTOP_DIFF_TAB, title: "Diff", icon: "GitCompare",
+      component: DesktopPageDiff, layout: "flush",
+    }],
   });
   // --- Global surface trial: multiple always-reachable triggers for the same
   // singleton call. All are pure toggles; the composer button owns the binding.

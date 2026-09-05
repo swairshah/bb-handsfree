@@ -2,16 +2,21 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { VoiceAgent, type Bindings } from "./voice-agent.ts";
 import { ViewWorkspace } from "./view-workspace.ts";
+import { DesktopViews, DESKTOP_DEFAULTS, type CallOrigin } from "./desktop-views.ts";
 import { clientDescriptor } from "./client-identity.ts";
 
 type Call = { method: string; args: any };
-function fixture(mobile = true) {
+function fixture(mobile = true, origin: CallOrigin = "composer") {
   clientDescriptor.mobile = mobile;
   const workspace = new ViewWorkspace();
-  const agent = new VoiceAgent(workspace);
+  const desktop = new DesktopViews();
+  const preferences = { ...DESKTOP_DEFAULTS };
+  const navigated: string[] = [];
+  const agent = new VoiceAgent(workspace, desktop);
   const internal = agent as unknown as {
     nonce: string | null;
     state: string;
+    callOrigin: CallOrigin;
     handleToolCall(dc: RTCDataChannel, event: Record<string, unknown>): Promise<void>;
     logQueue: Promise<unknown> | null;
   };
@@ -22,23 +27,136 @@ function fixture(mobile = true) {
     calls.push({ method, args });
     if (method === "resolveThreadViews") return {
       views: [...new Set(args.threadIds as string[])].map(threadId => ({ kind: "thread", id: `thread:${threadId}`, threadId, projectId: `project-${threadId}`, title: `Title ${threadId}` })),
-      preference: "reuse",
+      preference: "reuse", desktop: preferences,
     };
     if (method === "runTool") return { output: JSON.stringify(args), status: "success" };
+    if (method === "getThreadDiff") return { title: "Target", shortstat: "1 file changed", files: [], truncated: false };
+    if (method === "resolveFilePreview") return args.asHostFile ? { kind: "host", hostId: "host", path: `/workspace/${args.threadId}/${args.path}` }
+      : { kind: "workspace", environmentId: `env-${args.threadId}`, path: args.path };
     return { ok: true };
   } } as Bindings["rpc"];
-  const base: Bindings = { rpc, context: { threadId: "original", projectId: "original-project", onNewThreadScreen: false }, openNewThread() {} };
+  const base: Bindings = { rpc, context: { threadId: "original", projectId: "original-project", onNewThreadScreen: false }, openNewThread() {}, routeThreadId: "original", navigateToThread: id => { navigated.push(id); agent.bind({ ...base, routeThreadId: id, context: { ...base.context, threadId: id } }); } };
   agent.bind(base);
   internal.nonce = "call-session";
   internal.state = "live";
+  internal.callOrigin = origin;
   let count = 0;
   const execute = async (name: string, args: Record<string, unknown>) => {
     await internal.handleToolCall(dc, { name, call_id: `tool-${++count}`, arguments: JSON.stringify(args) });
     while (internal.logQueue) await internal.logQueue;
     return calls.filter(call => call.method === "logEvent" && call.args.kind === "tool.result").at(-1)?.args.payload;
   };
-  return { workspace, agent, internal, calls, sent, dc, base, execute };
+  return { workspace, desktop, preferences, navigated, agent, internal, calls, sent, dc, base, execute };
 }
+
+test("file previews resolve the shown or named workspace and optional line without navigating", async () => {
+  const f = fixture(false);
+  const previews: unknown[] = [];
+  f.agent.bind({ ...f.base, previewFile: options => { previews.push(options); return true; } });
+  f.desktop.registerContext(() => ({ kind: "thread", id: "thread:shown", threadId: "shown", projectId: "p", title: "Shown" }));
+  assert.equal((await f.execute("preview_file", { path: "README.md", line: 12 })).status, "success");
+  assert.deepEqual(previews[0], { target: { kind: "workspace", environmentId: "env-shown", path: "README.md" }, location: { kind: "line", line: 12, column: null } });
+  await f.execute("preview_file", { thread_id: "other", path: "src/app.ts" });
+  assert.deepEqual(previews[1], { target: { kind: "workspace", environmentId: "env-other", path: "src/app.ts" }, location: null });
+  for (const line of [0, -1, 1.5, "12"]) assert.equal((await f.execute("preview_file", { path: "README.md", line })).status, "error");
+  f.agent.bind({ ...f.base, previewFile: () => false });
+  assert.equal((await f.execute("preview_file", { path: "README.md" })).status, "error");
+  assert.deepEqual(f.navigated, []);
+  assert.equal(f.calls.some(call => call.method === "runTool"), false);
+  const mobile = fixture(true);
+  assert.match((await mobile.execute("preview_file", { path: "README.md" })).output, /desktop-only/);
+  assert.equal(mobile.calls.some(call => call.method === "resolveFilePreview"), false);
+});
+
+test("a late file resolution cannot open after the call ends", async () => {
+  const f = fixture(false);
+  const original = f.base.rpc.call;
+  f.agent.bind({ ...f.base, previewFile: () => { throw new Error("Must not open"); }, rpc: { call: (async (method: any, args: any) => {
+    const result = await original(method, args);
+    if (method === "resolveFilePreview") f.internal.nonce = null;
+    return result;
+  }) as Bindings["rpc"]["call"] } });
+  assert.match((await f.execute("preview_file", { path: "README.md" })).output, /call ended/);
+});
+
+test("a declined workspace file uses the same file's explicit host target without navigation", async () => {
+  const f = fixture(false);
+  const targets: unknown[] = [];
+  f.agent.bind({ ...f.base, previewFile: ({ target }) => { targets.push(target); return target.kind === "host"; } });
+  assert.equal((await f.execute("preview_file", { thread_id: "other", path: "server.js" })).status, "success");
+  assert.deepEqual(targets, [{ kind: "workspace", environmentId: "env-other", path: "server.js" },
+    { kind: "host", hostId: "host", path: "/workspace/other/server.js" }]);
+  assert.deepEqual(f.navigated, []);
+  const original = f.base.rpc.call;
+  f.agent.bind({ ...f.base, previewFile: () => false, rpc: { call: (async (method: any, args: any) => {
+    const result = await original(method, args);
+    if (method === "resolveFilePreview" && args.asHostFile) f.internal.nonce = null;
+    return result;
+  }) as Bindings["rpc"]["call"] } });
+  assert.match((await f.execute("preview_file", { path: "server.js" })).output, /call ended/);
+});
+
+test("show_diff targets a named changed file rather than substituting full-file preview", async () => {
+  const f = fixture(false);
+  const opened: unknown[] = [];
+  f.desktop.registerPresenter({ kind: "thread", ownerId: "original", available: () => true, open: () => true,
+    openDiff: (...args) => { opened.push(args); return true; } });
+  const result = await f.execute("show_diff", { path: "server.js" });
+  assert.equal(result.status, "success");
+  assert.match(result.output, /showing changes to server.js/);
+  assert.deepEqual(opened, [["original", "Target", "server.js"]]);
+  assert.deepEqual(f.calls.find(call => call.method === "getThreadDiff")?.args, { threadId: "original", path: "server.js" });
+  assert.equal(f.calls.some(call => call.method === "resolveFilePreview"), false);
+});
+
+test("browser opens are local, respect host acceptance, and reject unsupported URLs and mobile", async () => {
+  for (const origin of ["composer", "handsfree"] as const) {
+    const f = fixture(false, origin);
+    const urls: string[] = [];
+    f.agent.bind({ ...f.base, openUrl: url => { urls.push(url); return true; } });
+    const result = await f.execute("open_browser", { url: "https://example.com" });
+    assert.equal(result.status, "success");
+    assert.match(result.output, /preference.*not confirmed/);
+    assert.deepEqual(urls, ["https://example.com/"]);
+    for (const url of ["javascript:alert(1)", "file:///tmp/a", "example.com", "https://u:p@example.com", "https://"]) {
+      assert.equal((await f.execute("open_browser", { url })).status, "error");
+    }
+    assert.equal(urls.length, 1);
+    f.agent.bind({ ...f.base, openUrl: () => false });
+    assert.equal((await f.execute("open_browser", { url: "https://example.com" })).status, "error");
+    assert.equal(f.calls.some(call => call.method === "runTool"), false);
+    assert.deepEqual(f.navigated, []);
+  }
+  const mobile = fixture(true);
+  mobile.agent.bind({ ...mobile.base, openUrl: () => { throw new Error("Must not open"); } });
+  assert.match((await mobile.execute("open_browser", { url: "https://example.com" })).output, /desktop-only/);
+});
+
+test("desktop diff opens a local panel; decline and ended calls never fall back to navigation", async () => {
+  const f = fixture(false);
+  const opened: string[] = [];
+  f.desktop.registerPresenter({ kind: "thread", ownerId: "source", available: () => true, open: () => true,
+    openDiff: id => { opened.push(id); return true; } });
+  const result = await f.execute("show_diff", { thread_id: "a" });
+  assert.equal(result.status, "success");
+  assert.equal(result.presentation, "panel");
+  assert.deepEqual(opened, ["a"]);
+  f.desktop.registerPresenter({ kind: "page", ownerId: "page", available: () => true, open: () => true, openDiff: () => false });
+  assert.equal((await f.execute("show_diff", { thread_id: "b" })).status, "error");
+  const originalCall = f.base.rpc.call;
+  f.agent.bind({ ...f.base, rpc: { call: (async (method: any, args: any) => {
+    const result = await originalCall(method, args);
+    if (method === "getThreadDiff") f.internal.nonce = null;
+    return result;
+  }) as Bindings["rpc"]["call"] } });
+  assert.match((await f.execute("show_diff", { thread_id: "c" })).output, /call ended/);
+  assert.deepEqual(opened, ["a"]);
+  assert.deepEqual(f.navigated, []);
+  assert.equal(f.calls.some(call => call.method === "runTool"), false);
+  const mobile = fixture(true);
+  await mobile.execute("show_diff", { thread_id: "a" });
+  assert.equal(mobile.calls.find(call => call.method === "runTool")?.args.args.focus, false);
+});
 
 test("mobile openings use local drawers with correlated tool events", async () => {
   const f = fixture();
@@ -54,23 +172,22 @@ test("mobile openings use local drawers with correlated tool events", async () =
   assert.equal(f.calls.some(call => call.method === "runTool" || call.method === "sendCompanion"), false);
 });
 
-test("desktop focus_thread retains server navigation even if a local presenter exists", async () => {
-  for (const entry of ["composer", "handsfree"]) {
-    const f = fixture(false);
-    if (entry === "handsfree") f.agent.bind({ ...f.base, context: { threadId: null, projectId: null, onNewThreadScreen: false } });
-    f.workspace.registerPresenter({ available: () => true, reveal: () => { throw new Error("Desktop must not use the drawer"); } });
+test("desktop composer and global defaults navigate only the calling window", async () => {
+  for (const origin of ["composer", "global"] as const) {
+    const f = fixture(false, origin);
+    f.desktop.registerPresenter({ kind: "thread", ownerId: "source", available: () => true, open: () => { throw new Error("Must navigate"); } });
     const result = await f.execute("focus_thread", { thread_id: "a" });
     assert.equal(result.status, "success");
     assert.equal(result.presentation, "navigation");
-    assert.equal(f.calls.some(call => call.method === "resolveThreadViews"), false);
-    assert.equal(f.calls.filter(call => call.method === "runTool" && call.args.name === "focus_thread").length, 1);
+    assert.deepEqual(f.navigated, ["a"]);
+    assert.equal(f.calls.some(call => call.method === "runTool"), false);
     assert.equal(f.workspace.get().views.length, 0);
   }
 });
 
 test("stale desktop sessions cannot activate mobile drawer tools", async () => {
   const f = fixture(false);
-  for (const name of ["focus_threads", "manage_views", "set_view_behavior"]) {
+  for (const name of ["manage_views", "set_view_behavior"]) {
     const result = await f.execute(name, { action: "clear", thread_ids: ["a"], behavior: "new" });
     assert.equal(result.status, "error");
     assert.match(result.output, /mobile-only/);
@@ -148,4 +265,92 @@ test("stopping during metadata resolution prevents a late open and logs to the o
   assert.equal(f.workspace.get().views.length, 0);
   assert.equal(f.sent.length, 0);
   assert.equal(f.calls.filter(call => call.args.kind === "tool.result").at(-1)?.args.sessionId, "call-session");
+});
+
+
+test("desktop preferences use the captured origin, survive rebinding, and honor action overrides", async () => {
+  const f = fixture(false, "handsfree");
+  const opened: string[] = [];
+  f.desktop.registerPresenter({ kind: "thread", ownerId: "source", available: () => true, open: view => { opened.push(view.threadId); return true; } });
+  // A composer mounts later; it must not change the call's original entry point.
+  f.agent.bind({ ...f.base, context: { threadId: "later", projectId: "later-project", onNewThreadScreen: false } });
+  assert.equal(f.agent.getCallOrigin(), "handsfree");
+  assert.equal((await f.execute("focus_thread", { thread_id: "a" })).presentation, "panel");
+  assert.deepEqual(opened, ["a"]);
+  assert.equal((await f.execute("focus_thread", { thread_id: "b", destination: "navigate" })).presentation, "navigation");
+  assert.deepEqual(f.navigated, ["b"]);
+  f.preferences.desktopAideDestination = "navigate";
+  assert.equal((await f.execute("focus_thread", { thread_id: "c" })).presentation, "navigation");
+  assert.equal((await f.execute("focus_thread", { thread_id: "d", disposition: "new" })).presentation, "panel");
+  assert.deepEqual(opened, ["a", "d"]);
+});
+
+test("desktop native batches preserve origin preferences and never enter the mobile collection", async () => {
+  const f = fixture(false);
+  const opened: string[] = [];
+  f.desktop.registerPresenter({ kind: "thread", ownerId: "source", available: () => true, open: view => { opened.push(view.threadId); return true; } });
+  const result = await f.execute("focus_threads", { thread_ids: ["a", "b", "a"] });
+  assert.equal(result.status, "success");
+  assert.deepEqual(opened, ["a", "b", "a"]);
+  assert.deepEqual(f.navigated, []);
+  assert.deepEqual(f.workspace.get().views, []);
+  assert.equal(f.preferences.desktopComposerDestination, "navigate");
+});
+
+test("desktop unavailable destinations and late results do not broadcast or navigate as fallback", async () => {
+  const f = fixture(false, "handsfree");
+  assert.equal((await f.execute("focus_thread", { thread_id: "a" })).status, "error");
+  let resolve!: (value: any) => void;
+  f.base.rpc.call = ((method: string, args: any) => method === "resolveThreadViews"
+    ? new Promise(r => { resolve = r; }) : Promise.resolve((f.calls.push({ method, args }), { ok: true }))) as Bindings["rpc"]["call"];
+  const pending = f.execute("focus_thread", { thread_id: "a", destination: "navigate" });
+  f.internal.nonce = null;
+  resolve({ views: [{ kind: "thread", id: "thread:a", threadId: "a", projectId: null, title: "A" }], desktop: f.preferences });
+  await pending;
+  assert.deepEqual(f.navigated, []);
+  assert.equal(f.calls.some(call => call.method === "runTool"), false);
+});
+
+test("mobile stale schemas cannot activate desktop preferences or navigation", async () => {
+  const f = fixture();
+  assert.equal((await f.execute("set_desktop_behavior", { composer_destination: "navigate" })).status, "error");
+  assert.equal((await f.execute("focus_thread", { thread_id: "a", destination: "navigate" })).status, "error");
+  assert.deepEqual(f.navigated, []);
+  assert.equal(f.calls.some(call => call.method === "runTool"), false);
+});
+
+test("desktop navigation waits through the unbound route transition before the next tool", async () => {
+  const f = fixture(false);
+  f.base.navigateToThread = id => { f.navigated.push(id); };
+  let finished = false;
+  const pending = f.execute("focus_thread", { thread_id: "target" }).then(result => { finished = true; return result; });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(f.navigated, ["target"]);
+  assert.equal(finished, false);
+  f.agent.bind({ ...f.base, routeThreadId: "target", context: { threadId: "target", projectId: "project-target", onNewThreadScreen: false } });
+  assert.equal((await pending).status, "success");
+  const context = JSON.parse((await f.execute("get_context", {})).output);
+  assert.equal(context.threadId, "target");
+});
+
+test("stopping cancels a pending desktop navigation acknowledgement", async () => {
+  const f = fixture(false);
+  f.base.navigateToThread = () => {};
+  const pending = f.execute("focus_thread", { thread_id: "target" });
+  await new Promise(resolve => setImmediate(resolve));
+  f.agent.stop();
+  assert.equal((await pending).status, "error");
+  assert.equal(f.sent.length, 0);
+});
+
+test("visible desktop tabs provide context and guard composer edits", async () => {
+  const f = fixture(false);
+  const unmount = f.desktop.registerContext(() => ({ kind: "thread", id: "thread:shown", threadId: "shown", projectId: "shown-project", title: "Shown" }));
+  const context = JSON.parse((await f.execute("get_context", {})).output);
+  assert.equal(context.threadId, "shown");
+  assert.equal(context.projectId, "shown-project");
+  assert.equal(context.callOrigin, "composer");
+  assert.equal((await f.execute("set_composer_text", { text: "wrong composer" })).status, "error");
+  unmount();
+  assert.equal(JSON.parse((await f.execute("get_context", {})).output).threadId, "original");
 });

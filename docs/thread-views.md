@@ -1,9 +1,8 @@
 # Mobile thread views beside a call
 
-This PR changes mobile thread presentation. Desktop `focus_thread` retains the
-existing `bb.sdk.threads.open` navigation, whether the call starts from the
-composer or Handsfree page. Desktop destination preferences are a separate
-proposal in [desktop-navigation-plan.md](desktop-navigation-plan.md).
+This document describes the mobile drawer. Desktop now has independent
+[opening preferences and native thread-page tabs](desktop-navigation-plan.md);
+those settings do not change mobile routing.
 
 On mobile, the merged implementation refused `focus_thread` during a live call
 and told the user what to tap, because navigating away could suspend the owning
@@ -49,19 +48,13 @@ its draft/focus. Pinch zoom retains the host's normal layout. Native iOS still
 needs a device regression check; a browser fixture cannot reproduce its audio
 or keyboard lifecycle.
 
-## Desktop compatibility
+## Desktop independence
 
-The frontend sends its mobile classification at call creation. Desktop sessions
-receive the original navigation-oriented `focus_thread` schema, without a tab
-disposition parameter or mobile view-management tools. Mobile settings cannot
-change desktop navigation. The client also rejects mobile-only tools from stale
-desktop sessions that may still know about them.
-
-App registration runs in each client. Only mobile clients register the Handsfree
-fixed drawer tab and thread-page panel action. Desktop therefore gains no new
-Views tab or panel launcher entry. This is supported with static registrations
-chosen at client initialization; it does not imply an API for dynamically
-creating arbitrary native tabs on a plugin page.
+The frontend sends its mobile classification at call creation. Mobile receives
+its drawer tools; desktop receives its own destination and native-tab tools.
+Mobile ignores navigation overrides and rejects desktop preference tools.
+Desktop rejects mobile view-management tools. Device-specific app registration
+keeps the mobile drawer separate from the desktop native-tab renderers.
 
 ## Local surfaces and context
 

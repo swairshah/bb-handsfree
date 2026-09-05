@@ -2,7 +2,8 @@
 // separate windows/native webviews have separate instances. Presence and call
 // controls cross those boundaries, but opening views stays local to the caller.
 import { toast } from "sonner";
-import type { useRpc } from "@get-bb/plugin-sdk/app";
+import { desktopViews, DesktopViews, desktopDestination, DESKTOP_DEFAULTS, type CallOrigin } from "./desktop-views";
+import type { useRpc, ExperimentalFileOpenOptions } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "./server";
 import {
   audioCaptureConstraint,
@@ -75,6 +76,12 @@ export interface Bindings {
    */
   composer?: ComposerBinding;
   openNewThread: (projectId: string | null) => void;
+  /** Current-window navigation; never broadcast a desktop focus to other clients. */
+  navigateToThread?: (threadId: string) => void;
+  openUrl?: (url: string) => boolean;
+  previewFile?: (options: ExperimentalFileOpenOptions) => boolean;
+  /** The host route, independent of an embedded composer's thread. */
+  routeThreadId?: string | null;
 }
 
 interface SessionHandle {
@@ -178,6 +185,9 @@ export class VoiceAgent {
   private listeners = new Set<() => void>();
   private bindings: Bindings | null = null;
   private nonce: string | null = null;
+  private callOrigin: CallOrigin = "global";
+  readonly getCallOrigin = () => this.callOrigin;
+  private bindingListeners = new Set<() => void>();
   private storage = browserStorage();
   private audioPreferences: AudioDevicePreferences =
     this.storage
@@ -231,7 +241,7 @@ export class VoiceAgent {
   private bindingSources = new Map<symbol, { bindings: Bindings; fallback: boolean }>();
   private logQueue: Promise<unknown> | null = null;
 
-  constructor(workspace: ViewWorkspace = viewWorkspace) { this.workspace = workspace; }
+  constructor(workspace: ViewWorkspace = viewWorkspace, private desktop: DesktopViews = desktopViews) { this.workspace = workspace; }
   /** The most recent tool call, so a suspend/teardown can name its likely cause. */
   private lastTool: { name: string; at: number } | null = null;
 
@@ -337,10 +347,36 @@ export class VoiceAgent {
     const refresh = () => {
       const sources = [...this.bindingSources.values()].reverse();
       this.bindings = (sources.find(source => !source.fallback) ?? sources[0])?.bindings ?? null;
+      for (const listener of this.bindingListeners) listener();
     };
     refresh();
     this.helloOnce(fallback ? "page" : "composer");
     return () => { this.bindingSources.delete(key); refresh(); };
+  }
+
+  /** A route change briefly unmounts all composers. Finish the navigation tool
+   * only after the target is bound, so the next tool sees its context. */
+  private waitForThreadBinding(threadId: string, nonce: string): Promise<boolean> {
+    return new Promise(resolve => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      let unsubscribe = () => {};
+      const finish = (ready: boolean) => {
+        if (timer) clearTimeout(timer);
+        this.bindingListeners.delete(check);
+        unsubscribe();
+        resolve(ready);
+      };
+      const check = () => {
+        if (this.nonce !== nonce) finish(false);
+        else if ([...this.bindingSources.values()].some(({ bindings }) =>
+          bindings.routeThreadId === threadId && bindings.context.threadId === threadId,
+        )) finish(true);
+      };
+      this.bindingListeners.add(check);
+      unsubscribe = this.subscribe(check);
+      timer = setTimeout(() => finish(false), 5000);
+      check();
+    });
   }
   /**
    * Announce this realm once it can talk to the backend, so every surface (even
@@ -515,11 +551,11 @@ export class VoiceAgent {
   // ---- surface controls: act on the local call, or relay to the owner ----
 
   /** Start/stop from any surface. A mirrored remote call is stopped, not toggled. */
-  toggleFromSurface() {
-    if (this.hasLocalCall()) return this.toggle();
+  toggleFromSurface(origin: CallOrigin = "global") {
+    if (this.hasLocalCall()) return this.toggle(origin);
     const remote = this.remotePresenceLive();
     if (remote) return this.stopRemote(remote.nonce);
-    void this.start();
+    void this.start(origin);
   }
 
   /** Mute/unmute from any surface. */
@@ -553,8 +589,8 @@ export class VoiceAgent {
     this.emitChange();
   }
 
-  toggle() {
-    if (this.state === "idle") void this.start();
+  toggle(origin: CallOrigin = "global") {
+    if (this.state === "idle") void this.start(origin);
     else this.stop();
   }
 
@@ -960,13 +996,62 @@ export class VoiceAgent {
     let status: "success" | "error" | undefined;
     let presentation: string | undefined;
     let label: string | undefined;
-    const shown = clientDescriptor.mobile ? this.workspace.current() : null;
+    const shown = clientDescriptor.mobile ? this.workspace.current() : this.desktop.current();
     const context = shown
       ? { threadId: shown.threadId, projectId: shown.projectId, onNewThreadScreen: false }
       : bindings?.context;
     try {
       if (!bindings) {
         throw new Error("No bb surface is bound right now.");
+      } else if (name === "preview_file") {
+        if (clientDescriptor.mobile) throw new Error("File preview opening is desktop-only during a voice call.");
+        const threadId = args.thread_id === undefined ? context?.threadId : args.thread_id;
+        if (typeof threadId !== "string" || !threadId.trim()) throw new Error("Specify which thread's workspace contains this file.");
+        if (typeof args.path !== "string" || !args.path.trim()) throw new Error("Provide a workspace-relative file path.");
+        if (args.line !== undefined && (typeof args.line !== "number" || !Number.isSafeInteger(args.line) || args.line < 1)) {
+          throw new Error("The line number must be a positive integer.");
+        }
+        const target = await bindings.rpc.call("resolveFilePreview", { threadId, path: args.path });
+        if (dc.readyState !== "open" || this.nonce !== toolSessionId) throw new Error("The call ended before the file could be previewed.");
+        const location = typeof args.line === "number" ? { kind: "line" as const, line: args.line, column: null } : null;
+        if (!this.bindings?.previewFile?.({ target, location })) {
+          // A thread-page workspace preview is limited to its own environment.
+          // A host-file intent identifies the same file without borrowing that
+          // environment. The host still decides whether this surface supports it.
+          this.logDiag("filePreview.workspaceDeclined", { threadId, routeThreadId: this.bindings?.routeThreadId, target });
+          const hostTarget = await bindings.rpc.call("resolveFilePreview", { threadId, path: args.path, asHostFile: true });
+          if (dc.readyState !== "open" || this.nonce !== toolSessionId) throw new Error("The call ended before the file could be previewed.");
+          if (!this.bindings?.previewFile?.({ target: hostTarget, location })) {
+            throw new Error("BB cannot preview this file from the current screen. Ask whether to navigate to its thread or open it from Handsfree. Nothing was navigated; no additional file-viewer plugin is required for code files.");
+          }
+        }
+        output = `File preview request accepted for ${args.path}${location ? ` at line ${location.line}` : ""}. BB will load the file; loading is not confirmed.`;
+        label = `Requested preview of ${args.path}`;
+        presentation = "panel";
+        status = "success";
+      } else if (name === "open_browser") {
+        if (clientDescriptor.mobile) throw new Error("Browser opening is desktop-only during a voice call.");
+        if (typeof args.url !== "string" || !/^https?:\/\//i.test(args.url)) throw new Error("Provide a complete HTTP or HTTPS URL.");
+        const url = new URL(args.url);
+        if (url.username || url.password) throw new Error("Use a URL without embedded credentials.");
+        if (!bindings.openUrl?.(url.href)) throw new Error("This client declined the browser request.");
+        output = "Browser open request accepted using your BB browser preference. Page loading is not confirmed.";
+        label = "Requested browser open";
+        presentation = "browser";
+        status = "success";
+      } else if (!clientDescriptor.mobile && name === "show_diff") {
+        const threadId = args.thread_id === undefined ? context?.threadId : args.thread_id;
+        if (typeof threadId !== "string" || !threadId.trim()) throw new Error("Specify which thread's diff to show.");
+        if (args.path !== undefined && (typeof args.path !== "string" || !args.path.trim())) throw new Error("Provide a changed file's workspace-relative path.");
+        const path = typeof args.path === "string" ? args.path : undefined;
+        const diff = await bindings.rpc.call("getThreadDiff", { threadId, ...(path ? { path } : {}) });
+        if (dc.readyState !== "open" || this.nonce !== toolSessionId) throw new Error("The call ended before the diff could be shown.");
+        this.desktop.openDiff(threadId, diff.title, path);
+        output = JSON.stringify({ message: `Opened or selected the diff panel for ${diff.title}${path ? `, showing changes to ${path}` : ""}. The workspace was not navigated.`, path: diff.path, shortstat: diff.shortstat,
+          files: diff.files.slice(0, 50), truncated: diff.truncated });
+        label = path ? `Showed changes to ${path}` : `Showed diff for ${diff.title}`;
+        presentation = "panel";
+        status = "success";
       } else if (name === "set_composer_text") {
         if (!bindings.composer || (shown && bindings.context.threadId !== shown.threadId)) {
           throw new Error("No matching composer is available. Tap the shown thread’s composer to draft a message.");
@@ -995,7 +1080,9 @@ export class VoiceAgent {
         bindings.openNewThread(projectId);
         output =
           "Opened the New thread screen with the project preselected. The user will type the prompt themselves; no thread exists yet.";
-      } else if (!clientDescriptor.mobile && ["focus_threads", "manage_views", "set_view_behavior"].includes(name)) {
+      } else if (clientDescriptor.mobile && name === "set_desktop_behavior") {
+        throw new Error("Desktop preferences are unavailable during a mobile call.");
+      } else if (!clientDescriptor.mobile && ["manage_views", "set_view_behavior"].includes(name)) {
         throw new Error("Drawer tools are mobile-only. On desktop, use focus_thread to navigate to a thread.");
       } else if (
         clientDescriptor.mobile && (this.state === "live" || this.state === "muted") &&
@@ -1014,6 +1101,35 @@ export class VoiceAgent {
         label = views.length === 1 ? `Showed ${views[0].title}` : `Showed ${views.length} threads`;
         status = "success";
         presentation = "panel";
+      } else if (!clientDescriptor.mobile && (name === "focus_thread" || name === "focus_threads")) {
+        const ids = name === "focus_thread" ? [args.thread_id] : args.thread_ids;
+        if (!Array.isArray(ids) || !ids.length || ids.length > 100 || ids.some(id => typeof id !== "string" || !id.trim())) {
+          throw new Error("Provide between 1 and 100 valid thread IDs.");
+        }
+        const disposition = name === "focus_threads" ? "new" : args.disposition ?? "auto";
+        if (disposition !== "auto" && disposition !== "reuse" && disposition !== "new") throw new Error("Invalid tab disposition.");
+        const { views, desktop = DESKTOP_DEFAULTS } = await bindings.rpc.call("resolveThreadViews", { threadIds: ids as string[] });
+        if (dc.readyState !== "open" || this.nonce !== toolSessionId) throw new Error("The call ended before the threads could be shown.");
+        const destination = name === "focus_threads" ? "panel" : desktopDestination(this.callOrigin, disposition !== "auto" && (args.destination === undefined || args.destination === "auto") ? "panel" : args.destination, desktop);
+        if (destination === "navigate") {
+          if (disposition !== "auto") throw new Error("Tab disposition applies to side panels. Ask to open beside the call for a new or reusable tab.");
+          // Re-read the binding after metadata lookup: navigation can mount a new surface while waiting.
+          const navigate = this.bindings?.navigateToThread;
+          if (!navigate) throw new Error("This screen cannot navigate locally. No other window was changed.");
+          navigate(views[0].threadId);
+          if (!await this.waitForThreadBinding(views[0].threadId, toolSessionId)) {
+            throw new Error("Navigation was requested, but the destination is not ready. Check the current screen before trying again.");
+          }
+          output = `Navigated to ${views[0].title}.`;
+          label = `Focused ${views[0].title}`;
+          presentation = "navigation";
+        } else {
+          const opened = this.desktop.open(views, disposition, desktop.desktopTabBehavior);
+          output = opened.message;
+          label = opened.label;
+          presentation = "panel";
+        }
+        status = "success";
       } else if (name === "manage_views") {
         const current = this.workspace.get();
         const id = typeof args.view_id === "string" ? args.view_id : "";
@@ -1036,6 +1152,9 @@ export class VoiceAgent {
         const result = await bindings.rpc.call("runTool", { name, args, ...context! });
         output = result.output;
         status = result.status;
+        if (!clientDescriptor.mobile && result.status === "success") {
+          try { output = JSON.stringify({ ...JSON.parse(output), callOrigin: this.callOrigin, desktopViews: this.desktop.capabilities() }); } catch { /* Keep a non-JSON legacy result readable. */ }
+        }
       } else {
         // These tools navigate (…→ threads.open) which would background a live
         // mobile call — tell the server not to focus so the work still happens but
@@ -1077,15 +1196,16 @@ export class VoiceAgent {
     this.requestResponse(dc);
   }
 
-  private async start() {
+  private async start(origin: CallOrigin = "global") {
     const bindings = this.bindings;
     if (!bindings) return;
     // Assign the nonce before entering "connecting" so that state's presence
     // broadcast already carries our identity.
     const nonce = crypto.randomUUID();
+    this.callOrigin = origin;
     this.nonce = nonce;
     this.setState("connecting");
-    this.log("session.started", { ...bindings.context, device: deviceSummary() });
+    this.log("session.started", { ...bindings.context, callOrigin: this.callOrigin, device: deviceSummary() });
     try {
       // Deterministic acquisition: enumerate what is actually present, resolve
       // the saved ids against it (a saved id whose salt rotated across restarts
@@ -1284,6 +1404,7 @@ export class VoiceAgent {
         sdp: localSdp,
         nonce,
         mobile: clientDescriptor.mobile,
+        callOrigin: origin,
         ...bindings.context,
       });
       if (this.session?.pc !== pc) return; // stopped while exchanging

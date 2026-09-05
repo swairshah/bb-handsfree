@@ -3,6 +3,56 @@ import assert from "node:assert/strict";
 import { createFakePluginHost, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import plugin, { toolSchemas, threadViewInstructions } from "./server.ts";
 
+test("file previews use the named thread's environment and reject ambiguous paths or absent workspaces", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "handsfree", sdk: { threads: {
+    get: async ({ threadId }) => makeThreadResponse({ id: threadId, environmentId: threadId === "none" ? null : `env-${threadId}` }),
+  } } });
+  try {
+    await plugin(bb);
+    assert.deepEqual(await harness.behavior.callRpc("resolveFilePreview", { threadId: "other", path: "src/my file.ts" }),
+      { kind: "workspace", environmentId: "env-other", path: "src/my file.ts" });
+    for (const path of ["/tmp/file", "../file", "a/../file", "https://example.com/a", "C:\\file", "", "a\u0000b"]) {
+      await assert.rejects(harness.behavior.callRpc("resolveFilePreview", { threadId: "a", path }));
+    }
+    await assert.rejects(harness.behavior.callRpc("resolveFilePreview", { threadId: "none", path: "README.md" }), /no workspace/);
+    assert.equal(harness.inspection.sdk.callsTo("threads.open").length, 0);
+    harness.sdk.stub("environments.get", async () => ({ hostId: "remote-host", path: "/workspace/other" }) as any);
+    assert.deepEqual(await harness.behavior.callRpc("resolveFilePreview", { threadId: "other", path: "src/my file.ts", asHostFile: true }),
+      { kind: "host", hostId: "remote-host", path: "/workspace/other/src/my file.ts" });
+    await assert.rejects(harness.behavior.callRpc("resolveFilePreview", { threadId: "other", path: "../escape", asHostFile: true }));
+  } finally { await harness.lifecycle.dispose(); }
+});
+
+test("diff RPC resolves the thread workspace, loads patches on demand, and reports unavailable content", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "handsfree" });
+  let branch: string | null = "main";
+  let binary = false;
+  let unavailable = false;
+  harness.sdk.stub("threads.get", async () => makeThreadResponse({ id: "a", environmentId: "env", title: "A" }));
+  harness.sdk.stub("environments.get", async () => ({ mergeBaseBranch: branch }) as any);
+  harness.sdk.stub("environments.diffFiles", async () => unavailable ? ({ outcome: "not_applicable", message: "Not a git workspace", reason: "non_git_environment" }) : ({
+    outcome: "available", shortstat: "1 file changed", truncated: false, mergeBaseRef: "base",
+    files: [{ path: "a.txt", additions: 1, deletions: 1, binary, loadMode: "on_demand", changeKind: "modified", origin: "tracked", previousPath: null }], initialPatches: [],
+  }));
+  harness.sdk.stub("environments.diffPatch", async () => ({ outcome: "available", patches: [{ path: "a.txt", patch: "@@ -1 +1 @@\n-old\n+new\n", truncated: true }] }));
+  try {
+    await plugin(bb);
+    const diff = await harness.behavior.callRpc("getThreadDiff", { threadId: "a" }) as any;
+    assert.match(diff.patch, /\+new/);
+    assert.equal(diff.truncated, true);
+    assert.equal(diff.path, "a.txt");
+    assert.equal(harness.inspection.sdk.callsTo("threads.open").length, 0);
+    await assert.rejects(harness.behavior.callRpc("getThreadDiff", { threadId: "a", path: "missing" }), /no longer/);
+    branch = null; binary = true;
+    const binaryDiff = await harness.behavior.callRpc("getThreadDiff", { threadId: "a" }) as any;
+    assert.equal(binaryDiff.patch, null);
+    assert.match(binaryDiff.notice, /Binary/);
+    assert.equal(harness.inspection.sdk.callsTo("environments.diffPatch").length, 1);
+    unavailable = true;
+    await assert.rejects(harness.behavior.callRpc("getThreadDiff", { threadId: "a" }), /Not a git workspace/);
+  } finally { await harness.lifecycle.dispose(); }
+});
+
 test("session history and plugin logs describe the same stored action, and failed tools mark sessions", async () => {
   const { bb, harness } = createFakePluginHost({ pluginId: "handsfree" });
   try {
@@ -61,18 +111,27 @@ test("server tool failures carry explicit status and do not create a separate se
   } finally { await harness.lifecycle.dispose(); }
 });
 
-test("desktop calls retain the original focus tool and exclude mobile-only controls", () => {
+test("desktop tools expose destination overrides and native batches, independently of mobile tools", () => {
   const desktop = toolSchemas([], false);
   const mobile = toolSchemas([], true);
-  for (const name of ["focus_threads", "manage_views", "set_view_behavior"]) {
+  for (const name of ["manage_views", "set_view_behavior"]) {
     assert.equal(desktop.some(tool => tool.name === name), false);
     assert.equal(mobile.some(tool => tool.name === name), true);
   }
   const focusDesktop = desktop.find(tool => tool.name === "focus_thread") as any;
   const focusMobile = mobile.find(tool => tool.name === "focus_thread") as any;
-  assert.equal("disposition" in focusDesktop.parameters.properties, false);
+  assert.equal("disposition" in focusDesktop.parameters.properties, true);
+  assert.equal("destination" in focusDesktop.parameters.properties, true);
+  assert.equal("destination" in focusMobile.parameters.properties, false);
+  assert.ok(desktop.some(tool => tool.name === "focus_threads"));
+  assert.ok(desktop.some(tool => tool.name === "set_desktop_behavior"));
+  assert.ok(desktop.some(tool => tool.name === "open_browser"));
+  assert.ok(desktop.some(tool => tool.name === "preview_file"));
+  assert.equal(mobile.some(tool => tool.name === "preview_file"), false);
+  assert.equal(mobile.some(tool => tool.name === "open_browser"), false);
+  assert.equal(mobile.some(tool => tool.name === "set_desktop_behavior"), false);
   assert.equal("disposition" in focusMobile.parameters.properties, true);
-  assert.match(threadViewInstructions(false), /navigates to the requested thread/);
+  assert.match(threadViewInstructions(false), /call origin captured at startup/);
   assert.match(threadViewInstructions(true), /do not navigate away/);
   assert.deepEqual(toolSchemas(), desktop);
 });
@@ -91,7 +150,7 @@ test("mobile settings never replace desktop navigation and migrate the prototype
   } finally { await harness.lifecycle.dispose(); }
 });
 
-test("desktop focus still opens the real bb thread through the original SDK operation", async () => {
+test("legacy server focus remains available for old frontends", async () => {
   const { bb, harness } = createFakePluginHost({ pluginId: "handsfree", sdk: {
     threads: { open: async () => ({ delivered: 1 }) },
   } });
@@ -102,5 +161,26 @@ test("desktop focus still opens the real bb thread through the original SDK oper
     }) as any;
     assert.deepEqual(result, { output: "Focused.", status: "success" });
     assert.equal(harness.inspection.sdk.callsTo("threads.open").length, 1);
+  } finally { await harness.lifecycle.dispose(); }
+});
+
+
+test("desktop settings persist per origin and remain independent of mobile preferences", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "handsfree" });
+  try {
+    await plugin(bb);
+    const initial = await harness.behavior.callRpc("getConfig", null) as any;
+    assert.equal(initial.desktopComposerDestination, "navigate");
+    assert.equal(initial.desktopAideDestination, "panel");
+    assert.equal(initial.desktopTabBehavior, "new");
+    const result = await harness.behavior.callRpc("runTool", { name: "set_desktop_behavior", args: { composer_destination: "panel", tab_behavior: "reuse" }, threadId: null, projectId: null }) as any;
+    assert.equal(result.status, "success");
+    const saved = await harness.behavior.callRpc("getConfig", null) as any;
+    assert.equal(saved.desktopComposerDestination, "panel");
+    assert.equal(saved.desktopAideDestination, "panel");
+    assert.equal(saved.desktopTabBehavior, "reuse");
+    assert.equal(saved.mobileViewBehavior, initial.mobileViewBehavior);
+    assert.equal((await harness.behavior.callRpc("runTool", { name: "set_desktop_behavior", args: {}, threadId: null, projectId: null }) as any).status, "error");
+    await assert.rejects(harness.behavior.callRpc("setConfig", { desktopAideDestination: "drawer" }));
   } finally { await harness.lifecycle.dispose(); }
 });

@@ -289,8 +289,9 @@ test("stopping during the SDP exchange closes the mic and cancels startup", asyn
   agent.bind({
     rpc: {
       // Pause startup at the SDP exchange so the test can stop mid-flight.
-      call: (async (method: string) => {
+      call: (async (method: string, args: any) => {
         if (method === "createCall") {
+          assert.equal(args.callOrigin, "handsfree");
           announceCallStarted();
           await callPending;
           return { sdp: "answer" };
@@ -305,7 +306,8 @@ test("stopping during the SDP exchange closes the mic and cancels startup", asyn
   agent.setAudioPreferences({ inputDeviceId: "", inputLabel: "" });
 
   try {
-    agent.toggle();
+    agent.toggleFromSurface("handsfree");
+    assert.equal(agent.getCallOrigin(), "handsfree");
     await callStarted;
     agent.stop();
 

@@ -28,6 +28,7 @@ import {
   type RealtimeModel,
   type Voice,
 } from "./models";
+import { DESKTOP_DEFAULTS, type DesktopPreferences } from "./desktop-views";
 import { voiceAgent } from "./voice-agent";
 import { deviceDisplayLabel } from "./audio-devices";
 import {
@@ -49,7 +50,7 @@ import { cn } from "@/lib/utils";
 
 type CredentialPreference = "auto" | "apiKey" | "subscription";
 
-interface VoiceConfig {
+interface VoiceConfig extends DesktopPreferences {
   model: RealtimeModel;
   voice: Voice;
   notifications: boolean;
@@ -103,16 +104,23 @@ function voiceLabel(voice: Voice): string {
 }
 
 const selectClass =
-  "block w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm text-foreground disabled:opacity-60";
+  "block w-56 max-w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm text-foreground disabled:opacity-60";
 
-function RefreshIcon() {
+function SettingRow({ id, label, hint, children }: {
+  id: string; label: string; hint?: string; children: ReactNode;
+}) {
   return (
-    <svg viewBox="0 0 16 16" className="size-4" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-      <path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9" />
-      <path d="M13.7 2.5V5H11.2" />
-    </svg>
+    <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2">
+      <div className="min-w-0 flex-1 basis-40">
+        <label htmlFor={id} className="block text-sm font-medium text-foreground">{label}</label>
+        {hint ? <p className="mt-1 text-xs text-muted-foreground">{hint}</p> : null}
+      </div>
+      <div className="ml-auto flex max-w-full items-center gap-2">{children}</div>
+    </div>
   );
 }
+
+const settingsCardClass = "rounded-lg border border-border bg-muted/20 p-4";
 
 /**
  * A labelled sub-group: a title-case heading (matching the host's section
@@ -204,15 +212,16 @@ function CredentialCard() {
   if (canChoose) {
     return (
       <div className="space-y-1.5">
-        <span className="text-sm font-medium text-foreground">Credential</span>
-        <select
-          value={chooserValue}
-          onChange={(event) => void choose(event.target.value as "apiKey" | "subscription")}
-          className={selectClass}
-        >
-          <option value="subscription">ChatGPT subscription</option>
-          <option value="apiKey">OpenAI API key</option>
-        </select>
+        <SettingRow id="handsfree-credential" label="Credential">
+          <select id="handsfree-credential"
+            value={chooserValue}
+            onChange={(event) => void choose(event.target.value as "apiKey" | "subscription")}
+            className={selectClass}
+          >
+            <option value="subscription">ChatGPT subscription</option>
+            <option value="apiKey">OpenAI API key</option>
+          </select>
+        </SettingRow>
         <div>
           <Button type="button" variant="outline" size="sm" onClick={() => void removeKey()}>
             Remove API key
@@ -260,11 +269,10 @@ export function ModelsSettings() {
   const loading = config === null;
 
   return (
-    <div className="space-y-4">
+    <div className={cn(settingsCardClass, "space-y-4")}>
       <CredentialCard />
-      <label className="block space-y-1">
-        <span className="text-sm font-medium text-foreground">Model</span>
-        <select
+      <SettingRow id="handsfree-model" label="Model">
+        <select id="handsfree-model"
           value={model}
           disabled={loading}
           onChange={(event) => {
@@ -279,10 +287,9 @@ export function ModelsSettings() {
             </option>
           ))}
         </select>
-      </label>
-      <label className="block space-y-1">
-        <span className="text-sm font-medium text-foreground">Voice</span>
-        <select
+      </SettingRow>
+      <SettingRow id="handsfree-voice" label="Voice">
+        <select id="handsfree-voice"
           value={voice}
           disabled={loading}
           onChange={(event) => {
@@ -297,14 +304,13 @@ export function ModelsSettings() {
             </option>
           ))}
         </select>
-      </label>
+      </SettingRow>
     </div>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Behavior: the prompt (how Aide acts), thread announcements, and which
-// plugins it may use.
+// Behavior: instructions, announcements, and plugin access.
 // ---------------------------------------------------------------------------
 
 export function BehaviorSettings() {
@@ -325,17 +331,8 @@ export function BehaviorSettings() {
   const showCustom = customMode || exposure === "custom";
 
   return (
-    <div className="space-y-5">
+    <div className={cn(settingsCardClass, "space-y-5")}>
       <PromptEditor />
-
-      <Group label="Mobile thread drawer" hint="On mobile, show threads without leaving the call. Desktop still navigates directly to threads.">
-        <label htmlFor="handsfree-view-behavior" className="mb-2 block text-sm">When showing a thread on mobile</label>
-        <select id="handsfree-view-behavior" className={selectClass} disabled={loading} value={config?.mobileViewBehavior ?? "reuse"}
-          onChange={event => void update({ mobileViewBehavior: event.target.value as VoiceConfig["mobileViewBehavior"] })}>
-          <option value="reuse">Replace the shown thread</option>
-          <option value="new">Keep threads in the drawer switcher</option>
-        </select>
-      </Group>
 
       <Group label="Announcements">
         <label className="flex items-center justify-between gap-3">
@@ -350,31 +347,33 @@ export function BehaviorSettings() {
         </label>
       </Group>
 
-      <Group label="Plugins" hint="Aide always has its built-in tools for driving bb by voice; plugins let it also run your other installed plugins.">
-        <select
-          value={showCustom ? "custom" : exposure}
-          disabled={loading}
-          onChange={(event) => {
-            const next = event.target.value;
-            if (next === "all") {
-              setCustomMode(false);
-              void update({ pluginCommands: "all" });
-            } else if (next === "none") {
-              setCustomMode(false);
-              void update({ pluginCommands: "none" });
-            } else {
-              // Entering custom: start from a clean slate unless a real list
-              // was already saved, then let the picker turn plugins on.
-              setCustomMode(true);
-              if (exposure !== "custom") void update({ pluginCommands: "none" });
-            }
-          }}
-          className={selectClass}
-        >
-          <option value="all">Built-in tools + all plugins</option>
-          <option value="none">Built-in tools only</option>
-          <option value="custom">Built-in tools + chosen plugins…</option>
-        </select>
+      <Group label="Plugins">
+        <SettingRow id="handsfree-plugins" label="Available plugins" hint="Aide’s built-in tools are always available.">
+          <select id="handsfree-plugins"
+            value={showCustom ? "custom" : exposure}
+            disabled={loading}
+            onChange={(event) => {
+              const next = event.target.value;
+              if (next === "all") {
+                setCustomMode(false);
+                void update({ pluginCommands: "all" });
+              } else if (next === "none") {
+                setCustomMode(false);
+                void update({ pluginCommands: "none" });
+              } else {
+                // Entering custom: start from a clean slate unless a real list
+                // was already saved, then let the picker turn plugins on.
+                setCustomMode(true);
+                if (exposure !== "custom") void update({ pluginCommands: "none" });
+              }
+            }}
+            className={selectClass}
+          >
+            <option value="all">All plugins</option>
+            <option value="none">None</option>
+            <option value="custom">Selected plugins…</option>
+          </select>
+        </SettingRow>
         {showCustom ? (
           <PluginPicker
             value={pluginCommands}
@@ -384,6 +383,59 @@ export function BehaviorSettings() {
         ) : null}
         <BuiltInToolsLink />
       </Group>
+    </div>
+  );
+}
+
+export function DefaultBehaviorSettings() {
+  const { config, update } = useVoiceConfig();
+  const loading = config === null;
+
+  return (
+    <div className={cn(settingsCardClass, "space-y-5")}>
+      <p className="text-xs text-muted-foreground">Handsfree can bring threads into view and open files, diffs, and links by voice on desktop. These settings control how threads open on desktop and mobile.</p>
+      <Group label="Desktop">
+        <div className="space-y-3">
+          <SettingRow id="handsfree-desktopComposerDestination" label="Calls from a thread’s composer"
+            hint="Switch the main view, or show the thread alongside it.">
+            <select id="handsfree-desktopComposerDestination" className={selectClass} disabled={loading}
+              value={config?.desktopComposerDestination ?? DESKTOP_DEFAULTS.desktopComposerDestination}
+              onChange={event => void update({ desktopComposerDestination: event.target.value as "navigate" | "panel" })}>
+              <option value="navigate">Main view</option>
+              <option value="panel">Side panel</option>
+            </select>
+          </SettingRow>
+          <SettingRow id="handsfree-desktop-tabs" label="Threads beside the composer"
+            hint="Keep separate tabs, or replace the thread in one shared tab.">
+            <select id="handsfree-desktop-tabs" className={selectClass} disabled={loading} value={config?.desktopTabBehavior ?? "new"}
+              onChange={event => void update({ desktopTabBehavior: event.target.value as "reuse" | "new" })}>
+              <option value="new">Separate tabs</option>
+              <option value="reuse">One shared tab</option>
+            </select>
+          </SettingRow>
+        </div>
+        <div className="border-t border-border/50 pt-3">
+          <SettingRow id="handsfree-desktopAideDestination" label="Calls from the plugin page"
+            hint="The side panel keeps the plugin page open, with one shared thread view.">
+            <select id="handsfree-desktopAideDestination" className={selectClass} disabled={loading}
+              value={config?.desktopAideDestination ?? DESKTOP_DEFAULTS.desktopAideDestination}
+              onChange={event => void update({ desktopAideDestination: event.target.value as "navigate" | "panel" })}>
+              <option value="navigate">Main view</option>
+              <option value="panel">Side panel</option>
+            </select>
+          </SettingRow>
+        </div>
+      </Group>
+      <Group label="Mobile" hint="From the plugin page, threads open in a bottom drawer without leaving the call. You can keep multiple views and switch between them; only one is visible at a time.">
+        <SettingRow id="handsfree-view-behavior" label="When opening another thread">
+          <select id="handsfree-view-behavior" className={selectClass} disabled={loading} value={config?.mobileViewBehavior ?? "reuse"}
+            onChange={event => void update({ mobileViewBehavior: event.target.value as VoiceConfig["mobileViewBehavior"] })}>
+            <option value="reuse">Replace current view</option>
+            <option value="new">Keep existing views</option>
+          </select>
+        </SettingRow>
+      </Group>
+      <p className="text-xs italic text-muted-foreground">Explicit voice requests can use a different supported view for one action, such as “open in the side panel” on desktop. Your saved defaults stay the same.</p>
     </div>
   );
 }
@@ -809,14 +861,14 @@ export function AudioSettings() {
   }
 
   return (
-    <div className="space-y-5">
+    <div className={cn(settingsCardClass, "space-y-5")}>
       <Group label="Microphone">
-        <div className="flex items-center gap-2">
-          <select
+        <SettingRow id="handsfree-microphone" label="Input device">
+          <select id="handsfree-microphone"
             value={preferences.inputDeviceId}
             disabled={loading}
             onChange={(event) => change(event.target.value)}
-            className={cn(selectClass, "flex-1")}
+            className={cn(selectClass, "min-w-0")}
           >
             <option value="">System default</option>
             {savedMicMissing ? (
@@ -832,32 +884,27 @@ export function AudioSettings() {
               </option>
             ))}
           </select>
-          <button
-            type="button"
-            onClick={() => void refresh()}
-            aria-label="Refresh devices"
-            title="Refresh devices"
-            className="flex size-9 shrink-0 items-center justify-center rounded-md border border-border text-muted-foreground hover:bg-state-hover hover:text-foreground"
-          >
-            <RefreshIcon />
-          </button>
-        </div>
-
-        <div className="flex items-center gap-2">
           <Button
             type="button"
             variant={testing ? "secondary" : "outline"}
             size="sm"
+            className="shrink-0"
+            aria-label={testing ? "Stop microphone test" : "Test microphone"}
             onClick={() => setTesting((prev) => !prev)}
           >
-            {testing ? "Stop test" : "Test microphone"}
+            {testing ? "Stop" : "Test"}
           </Button>
-          {labelsHidden ? (
-            <Button type="button" variant="outline" size="sm" onClick={() => void allowAccess()}>
-              Allow access
-            </Button>
-          ) : null}
-        </div>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="shrink-0"
+            aria-label="Refresh microphone devices"
+            onClick={() => void refresh()}
+          >
+            Refresh
+          </Button>
+        </SettingRow>
 
         {testing ? (
           <div className="rounded-md border border-border bg-muted/30 px-3 py-2">
@@ -867,7 +914,7 @@ export function AudioSettings() {
         ) : null}
 
         {labelsHidden ? (
-          <p className="text-xs text-muted-foreground">Allow mic access to see device names and test it.</p>
+          <p className="text-xs text-muted-foreground"><button type="button" className={cn(linkClass, "underline")} onClick={() => void allowAccess()}>Allow access</button> to see microphone names.</p>
         ) : savedMicMissing ? (
           <p className="text-xs text-muted-foreground">This mic isn't connected, so Aide falls back to your default.</p>
         ) : null}
@@ -875,9 +922,11 @@ export function AudioSettings() {
       </Group>
 
       <Group label="Speaker">
-        <div className="cursor-not-allowed rounded-md border border-border bg-muted/40 px-2 py-1.5 text-sm text-muted-foreground">
-          {labelsHidden || !speakerName ? "System default" : speakerName}
-        </div>
+        <SettingRow id="handsfree-speaker" label="Output device">
+          <output id="handsfree-speaker" className="block w-56 max-w-full truncate rounded-md border border-border bg-muted/40 px-2 py-1.5 text-sm text-muted-foreground" title={speakerName ?? "System default"}>
+            {labelsHidden || !speakerName ? "System default" : speakerName}
+          </output>
+        </SettingRow>
         <p className="text-xs italic text-muted-foreground">
           Switching speakers in the app isn't supported yet — change your output in your system sound settings.
         </p>
@@ -1004,7 +1053,7 @@ export function ShortcutsSettings() {
   const loading = config === null;
 
   return (
-    <div className="space-y-3">
+    <div className={cn(settingsCardClass, "space-y-3")}>
       <p className="text-xs text-muted-foreground">
         These work anywhere in bb, even while typing in the composer. Click Change, then press the new
         combination. Bindings are shared across your devices; ⌘ here means Ctrl on Windows and Linux.
