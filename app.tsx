@@ -26,7 +26,7 @@ import { DESKTOP_FIXED_TAB, DesktopPageThread, DesktopThreadTab } from "./deskto
 import { DESKTOP_DIFF_TAB, DesktopDiffTab, DesktopPageDiff } from "./desktop-diff";
 import { viewWorkspace } from "./view-workspace";
 import { COMPANION_TAB, CompanionTab, THREAD_WORKSPACE_ACTION } from "./companion";
-import { AudioSettings, BehaviorSettings, ModelsSettings, ShortcutsSettings } from "./settings-sections";
+import { AudioSettings, BehaviorSettings, ModelsSettings, ShortcutsSettings, ThreadOpeningSettings } from "./settings-sections";
 import { cn } from "@/lib/utils";
 import { AUDIO_DEVICE_STORAGE_KEY } from "./audio-devices";
 import { MicIcon, StopIcon, WaveformIcon, useCallElapsed } from "./voice-chrome";
@@ -379,6 +379,11 @@ export default definePluginApp((app) => {
     id: "behavior",
     title: "Behavior",
     component: BehaviorSettings,
+  });
+  app.slots.settingsSection({
+    id: "thread-opening",
+    title: "Thread opening",
+    component: ThreadOpeningSettings,
   });
   app.slots.settingsSection({
     id: "audio",
