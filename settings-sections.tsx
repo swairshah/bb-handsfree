@@ -393,7 +393,7 @@ export function DefaultBehaviorSettings() {
 
   return (
     <div className={cn(settingsCardClass, "space-y-5")}>
-      <p className="text-xs text-muted-foreground">Choose where Handsfree shows threads during a call.</p>
+      <p className="text-xs text-muted-foreground">Handsfree can bring threads into view and open files, diffs, and links by voice on desktop. These settings control how threads open on desktop and mobile.</p>
       <Group label="Desktop">
         <div className="space-y-3">
           <SettingRow id="handsfree-desktopComposerDestination" label="Calls from a thread’s composer"
