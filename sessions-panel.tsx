@@ -15,7 +15,7 @@ import {
 import type { rpcContract } from "./server";
 import { clientDescriptor } from "./client-identity";
 import { voiceAgent } from "./voice-agent";
-import { MicIcon, StopIcon, WaveformIcon, useCallElapsed } from "./voice-chrome";
+import { LiveCallControls, MicIcon, WaveformIcon } from "./voice-chrome";
 import { viewWorkspace } from "./view-workspace";
 import { actionStatus, pairToolEvents } from "./session-events";
 import { COMPANION_TAB } from "./companion";
@@ -144,10 +144,7 @@ function GearIcon() {
  */
 function CallConsole({ onViewTranscript, selectedId }: { onViewTranscript: (sessionId: string) => void; selectedId: string | null }) {
   const state = useSyncExternalStore(voiceAgent.subscribe, voiceAgent.getState);
-  const activity = useSyncExternalStore(voiceAgent.subscribe, voiceAgent.getActivity);
-  const micSuspended = useSyncExternalStore(voiceAgent.subscribe, voiceAgent.getMicSuspended);
   const lastActivity = useSyncExternalStore(voiceAgent.subscribe, voiceAgent.getLastActivity);
-  const elapsed = useCallElapsed();
   const live = state === "live";
   const muted = state === "muted";
   const active = live || muted;
@@ -171,24 +168,6 @@ function CallConsole({ onViewTranscript, selectedId }: { onViewTranscript: (sess
     );
   }
 
-  const speaking = activity === "aide";
-  const listening = activity === "you";
-  const activityColor = micSuspended
-    ? "text-destructive" // uplink down (iOS backgrounded the mic)
-    : speaking
-      ? "text-[color:var(--success,#6faf76)]" // Aide
-      : listening
-        ? "text-foreground" // you
-        : "text-muted-foreground/70";
-  const label = micSuspended
-    ? "Mic paused"
-    : speaking
-      ? "Aide speaking…"
-      : listening
-        ? "Listening…"
-        : muted
-          ? "Muted"
-          : "Connected";
   const liveId = voiceAgent.getSessionId();
   const ticker = tickerFor(lastActivity);
   // When you're already reading the live transcript, the ticker (and the pill's
@@ -215,40 +194,7 @@ function CallConsole({ onViewTranscript, selectedId }: { onViewTranscript: (sess
           </svg>
         </button>
       ) : null}
-      <div className="flex h-11 max-w-full items-center overflow-hidden rounded-full border border-border bg-card shadow-lg">
-      <button
-          type="button"
-          aria-label={muted ? "Unmute Aide microphone" : "Mute Aide microphone"}
-          title={muted ? "Unmute" : "Mute"}
-          onClick={() => voiceAgent.toggleMuteFromSurface()}
-          className={cn(
-            "flex size-11 shrink-0 items-center justify-center transition-colors",
-            muted
-              ? "text-destructive hover:bg-destructive/15"
-              : "text-muted-foreground hover:bg-accent hover:text-foreground",
-          )}
-        >
-          <MicIcon slashed={muted} />
-        </button>
-        <span className="h-5 w-px bg-border" />
-        <span className="flex min-w-0 items-center gap-2 px-3">
-          <span className={cn("flex shrink-0 items-center", activityColor)} title={label} aria-label={label}>
-            <WaveformIcon live={speaking || listening} />
-          </span>
-          <span className="truncate text-sm text-foreground">{label}</span>
-          <span className="shrink-0 tabular-nums text-xs text-muted-foreground">{elapsed ?? ""}</span>
-        </span>
-        <span className="h-5 w-px bg-border" />
-        <button
-          type="button"
-          aria-label="Stop Aide voice session"
-          title="Stop"
-          onClick={() => voiceAgent.stopFromSurface()}
-          className="flex size-11 shrink-0 items-center justify-center text-muted-foreground transition-colors hover:bg-destructive/15 hover:text-destructive"
-        >
-          <StopIcon />
-        </button>
-      </div>
+      <LiveCallControls />
     </div>
   );
 }

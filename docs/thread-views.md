@@ -36,6 +36,11 @@ the batch without changing the current views. Only the active chat mounts; bb
 owns drafts scoped to their threads. The collection survives drawer remounts
 within the loaded app session, but not refresh/restart/plugin reload.
 
+The drawer keeps call status, elapsed time, mute/unmute, and end-call controls
+in a footer outside the scrolling thread. It shares the Aide page's controls and
+call state. Controls remain available when switching or closing thread views,
+including after closing the last view; ending the call hides them.
+
 ## Desktop compatibility
 
 The frontend sends its mobile classification at call creation. Desktop sessions
@@ -99,7 +104,11 @@ The harness does not reproduce native microphone or drawer behavior.
 Before merging:
 
 1. On mobile, start from Handsfree; open/swap threads, dismiss/reopen the drawer,
-   and keep talking. Repeat from a thread composer.
+   and keep talking. Mute/unmute from the drawer, verify the page reflects the
+   same state, then end the call from the drawer. Confirm controls stay visible
+   while scrolling and using the keyboard. The native mobile composer has
+   reported no available drawer presenter; verify it explains the limitation
+   without navigating away or interrupting the call.
 2. Switch across projects, ask what thread is shown, then dismiss the drawer and
    verify context returns to the underlying surface.
 3. Draft text, switch away and return; verify the draft is preserved.
