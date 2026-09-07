@@ -91,6 +91,54 @@ test("mobile settings never replace desktop navigation and migrate the prototype
   } finally { await harness.lifecycle.dispose(); }
 });
 
+test("ring broadcasts an incoming-call invite to every window", async () => {  const { bb, harness } = createFakePluginHost({ pluginId: "handsfree" });
+  try {
+    await plugin(bb);
+    const result = await harness.behavior.runCli(["ring", "--title", "Morning brief", "--ttl", "45"]);
+    assert.equal(result.exitCode, 0);
+    assert.match(result.stdout, /Morning brief/);
+    const signal = harness.inspection.realtimeSignals.find((s) => s.channel === "voice-invite");
+    assert.ok(signal, "expected a voice-invite broadcast");
+    const payload = signal!.payload as Record<string, unknown>;
+    assert.equal(payload.title, "Morning brief");
+    assert.match(String(payload.inviteId), /^inv-/);
+    assert.ok((payload.expiresAt as number) > (payload.createdAt as number));
+    // Toast-only by default: no native banner without --banner.
+    assert.equal(harness.inspection.realtimeSignals.some((s) => s.channel === "notification"), false);
+  } finally { await harness.lifecycle.dispose(); }
+});
+
+test("ring --banner adds the native OS banner alongside the invite", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "handsfree" });
+  try {
+    await plugin(bb);
+    const result = await harness.behavior.runCli(["ring", "--title", "Morning brief", "--banner"]);
+    assert.equal(result.exitCode, 0);
+    const invite = harness.inspection.realtimeSignals.find((s) => s.channel === "voice-invite");
+    const banner = harness.inspection.realtimeSignals.find((s) => s.channel === "notification");
+    assert.deepEqual(banner?.payload, {
+      id: (invite?.payload as Record<string, unknown>)?.inviteId,
+      title: "Aide calling: Morning brief",
+      body: "Accept the call in BB to talk.",
+      threadId: null,
+      channels: ["web", "desktop"],
+    });
+  } finally { await harness.lifecycle.dispose(); }
+});
+
+test("resolveInvite rebroadcasts answers and dismissals to every window", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "handsfree" });
+  try {
+    await plugin(bb);
+    const result = await harness.behavior.callRpc("resolveInvite", { inviteId: "inv-1", action: "answered" });
+    assert.deepEqual(result, { ok: true });
+    const signal = harness.inspection.realtimeSignals.find((s) => s.channel === "voice-invite-resolved");
+    assert.deepEqual(signal?.payload, { inviteId: "inv-1", action: "answered" });
+    await assert.rejects(harness.behavior.callRpc("resolveInvite", { inviteId: "", action: "answered" }));
+    await assert.rejects(harness.behavior.callRpc("resolveInvite", { inviteId: "inv-1", action: "maybe" }));
+  } finally { await harness.lifecycle.dispose(); }
+});
+
 test("desktop focus still opens the real bb thread through the original SDK operation", async () => {
   const { bb, harness } = createFakePluginHost({ pluginId: "handsfree", sdk: {
     threads: { open: async () => ({ delivered: 1 }) },
@@ -102,5 +150,39 @@ test("desktop focus still opens the real bb thread through the original SDK oper
     }) as any;
     assert.deepEqual(result, { output: "Focused.", status: "success" });
     assert.equal(harness.inspection.sdk.callsTo("threads.open").length, 1);
+  } finally { await harness.lifecycle.dispose(); }
+});
+
+test("incoming-call preferences round-trip through getConfig/setConfig", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "handsfree" });
+  try {
+    await plugin(bb);
+    const current = await harness.behavior.callRpc("getConfig", null) as any;
+    assert.equal(current.incomingCalls, true);
+    assert.equal(current.ringtone, true);
+    assert.equal(current.snoozeMinutes, 10);
+    assert.equal(current.greetFirst, true);
+    const saved = await harness.behavior.callRpc("setConfig", {
+      incomingCalls: false, ringtone: false, snoozeMinutes: 5, greetFirst: false,
+    }) as any;
+    assert.equal(saved.incomingCalls, false);
+    assert.equal(saved.ringtone, false);
+    assert.equal(saved.snoozeMinutes, 5);
+    assert.equal(saved.greetFirst, false);
+    await assert.rejects(harness.behavior.callRpc("setConfig", { snoozeMinutes: 0 }));
+    await assert.rejects(harness.behavior.callRpc("setConfig", { snoozeMinutes: "soon" }));
+  } finally { await harness.lifecycle.dispose(); }
+});
+
+test("ring stays silent while incoming calls are disabled", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "handsfree" });
+  try {
+    await plugin(bb);
+    await bb.storage.kv.set("config", { incomingCalls: false });
+    const result = await harness.behavior.runCli(["ring", "--title", "Should not ring"]);
+    assert.equal(result.exitCode, 0);
+    assert.match(result.stdout, /disabled/);
+    assert.equal(harness.inspection.realtimeSignals.some((s) => s.channel === "voice-invite"), false);
+    assert.equal(harness.inspection.realtimeSignals.some((s) => s.channel === "notification"), false);
   } finally { await harness.lifecycle.dispose(); }
 });

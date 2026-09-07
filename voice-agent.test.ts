@@ -328,3 +328,287 @@ test("stopping during the SDP exchange closes the mic and cancels startup", asyn
     else delete (globalThis as { Audio?: unknown }).Audio;
   }
 });
+
+test("accepting an invite greets first with the call reason on open", async () => {
+  const originalNavigator = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+  const originalPeerConnection = Object.getOwnPropertyDescriptor(globalThis, "RTCPeerConnection");
+  const originalAudio = Object.getOwnPropertyDescriptor(globalThis, "Audio");
+  const track = { enabled: true, muted: false, readyState: "live", stop() {}, onmute: null, onunmute: null, onended: null };
+  const stream = { getTracks: () => [track], getAudioTracks: () => [track] } as unknown as MediaStream;
+  const sent: string[] = [];
+  let dc: { readyState: string; send(message: string): void; close(): void; onopen: (() => void) | null; onclose: (() => void) | null; onmessage: ((message: unknown) => void) | null } | null = null;
+
+  class FakePeerConnection {
+    iceGatheringState = "complete";
+    connectionState = "new";
+    localDescription: RTCSessionDescriptionInit | null = null;
+    ontrack: ((event: RTCTrackEvent) => void) | null = null;
+    onconnectionstatechange: (() => void) | null = null;
+    oniceconnectionstatechange: (() => void) | null = null;
+    addTrack() {}
+    addEventListener() {}
+    removeEventListener() {}
+    close() {}
+    createDataChannel() {
+      dc = {
+        readyState: "open",
+        send: (message: string) => sent.push(message),
+        close() {},
+        onopen: null,
+        onclose: null,
+        onmessage: null,
+      };
+      return dc;
+    }
+    async createOffer() {
+      return { type: "offer" as const, sdp: "offer" };
+    }
+    async setLocalDescription(description: RTCSessionDescriptionInit) {
+      this.localDescription = description;
+    }
+    async setRemoteDescription() {}
+  }
+
+  class FakeAudio {
+    autoplay = false;
+    srcObject: MediaStream | null = null;
+    async play() {}
+    remove() {}
+  }
+
+  Object.defineProperty(globalThis, "navigator", {
+    configurable: true,
+    value: {
+      mediaDevices: {
+        getUserMedia: async () => stream,
+        enumerateDevices: async () => [{ deviceId: "mic-1", kind: "audioinput", label: "Built-in Mic" }],
+      },
+    },
+  });
+  Object.defineProperty(globalThis, "RTCPeerConnection", { configurable: true, value: FakePeerConnection });
+  Object.defineProperty(globalThis, "Audio", { configurable: true, value: FakeAudio });
+
+  const agent = new VoiceAgent();
+  agent.bind({
+    rpc: { call: (async (method: string) => (method === "createCall" ? { sdp: "answer" } : { ok: true })) as never },
+    context: { threadId: null, projectId: null, onNewThreadScreen: false },
+    openNewThread() {},
+  });
+
+  try {
+    agent.acceptInvite("Morning brief", "Plan the day");
+    // Read through a call so control-flow narrowing (from the loop's !dc
+    // check) can't pin the variable to null.
+    const currentDc = () => dc;
+    for (let i = 0; i < 20 && !currentDc(); i++) await new Promise((resolve) => setImmediate(resolve));
+    const channel = currentDc();
+    assert.ok(channel, "expected the data channel to be created");
+    channel.onopen?.();
+    assert.equal(agent.getState(), "live");
+    assert.equal(sent.length, 2);
+    const greeting = JSON.parse(sent[0]);
+    assert.equal(greeting.type, "conversation.item.create");
+    assert.equal(greeting.item.role, "system");
+    assert.match(greeting.item.content[0].text, /Morning brief/);
+    assert.match(greeting.item.content[0].text, /Plan the day/);
+    assert.deepEqual(JSON.parse(sent[1]), { type: "response.create" });
+    // A later open must not greet again.
+    channel.onopen?.();
+    assert.equal(sent.length, 2);
+  } finally {
+    agent.stop();
+    if (originalNavigator) Object.defineProperty(globalThis, "navigator", originalNavigator);
+    else delete (globalThis as { navigator?: unknown }).navigator;
+    if (originalPeerConnection) Object.defineProperty(globalThis, "RTCPeerConnection", originalPeerConnection);
+    else delete (globalThis as { RTCPeerConnection?: unknown }).RTCPeerConnection;
+    if (originalAudio) Object.defineProperty(globalThis, "Audio", originalAudio);
+    else delete (globalThis as { Audio?: unknown }).Audio;
+  }
+});
+
+test("a greeting owed to a call that never goes live is dropped, not reused", async () => {
+  const originalNavigator = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+  const originalPeerConnection = Object.getOwnPropertyDescriptor(globalThis, "RTCPeerConnection");
+  const originalAudio = Object.getOwnPropertyDescriptor(globalThis, "Audio");
+  let micAvailable = false;
+  const track = { enabled: true, muted: false, readyState: "live", stop() {}, onmute: null, onunmute: null, onended: null };
+  const stream = { getTracks: () => [track], getAudioTracks: () => [track] } as unknown as MediaStream;
+  const sent: string[] = [];
+  const dcs: { readyState: string; send(message: string): void; close(): void; onopen: (() => void) | null; onclose: (() => void) | null; onmessage: ((message: unknown) => void) | null }[] = [];
+
+  class FakePeerConnection {
+    iceGatheringState = "complete";
+    connectionState = "new";
+    localDescription: RTCSessionDescriptionInit | null = null;
+    ontrack: ((event: RTCTrackEvent) => void) | null = null;
+    onconnectionstatechange: (() => void) | null = null;
+    oniceconnectionstatechange: (() => void) | null = null;
+    addTrack() {}
+    addEventListener() {}
+    removeEventListener() {}
+    close() {}
+    createDataChannel() {
+      const dc = {
+        readyState: "open",
+        send: (message: string) => sent.push(message),
+        close() {},
+        onopen: null,
+        onclose: null,
+        onmessage: null,
+      };
+      dcs.push(dc);
+      return dc;
+    }
+    async createOffer() {
+      return { type: "offer" as const, sdp: "offer" };
+    }
+    async setLocalDescription(description: RTCSessionDescriptionInit) {
+      this.localDescription = description;
+    }
+    async setRemoteDescription() {}
+  }
+
+  class FakeAudio {
+    autoplay = false;
+    srcObject: MediaStream | null = null;
+    async play() {}
+    remove() {}
+  }
+
+  Object.defineProperty(globalThis, "navigator", {
+    configurable: true,
+    value: {
+      mediaDevices: {
+        getUserMedia: async () => {
+          if (!micAvailable) throw new DOMException("Permission denied", "NotAllowedError");
+          return stream;
+        },
+        enumerateDevices: async () => [{ deviceId: "mic-1", kind: "audioinput", label: "Built-in Mic" }],
+      },
+    },
+  });
+  Object.defineProperty(globalThis, "RTCPeerConnection", { configurable: true, value: FakePeerConnection });
+  Object.defineProperty(globalThis, "Audio", { configurable: true, value: FakeAudio });
+
+  const agent = new VoiceAgent();
+  agent.bind({
+    rpc: { call: (async (method: string) => (method === "createCall" ? { sdp: "answer" } : { ok: true })) as never },
+    context: { threadId: null, projectId: null, onNewThreadScreen: false },
+    openNewThread() {},
+  });
+  const settled = () => new Promise((resolve) => setImmediate(resolve));
+
+  try {
+    // First accept: mic denied, call never goes live — nothing may be sent.
+    agent.acceptInvite("Stale brief", "should never be greeted");
+    for (let i = 0; i < 20 && agent.getState() !== "idle"; i++) await settled();
+    assert.equal(agent.getState(), "idle");
+    assert.equal(sent.length, 0);
+    // Second accept with the mic back: only the fresh reason is greeted.
+    micAvailable = true;
+    agent.acceptInvite("Fresh brief", "greet this one");
+    const currentDc = () => dcs[dcs.length - 1] ?? null;
+    for (let i = 0; i < 20 && !currentDc(); i++) await settled();
+    const channel = currentDc();
+    assert.ok(channel, "expected the data channel to be created");
+    channel.onopen?.();
+    assert.equal(sent.length, 2);
+    assert.match(JSON.parse(sent[0]).item.content[0].text, /Fresh brief/);
+    assert.doesNotMatch(JSON.stringify(sent), /Stale brief/);
+  } finally {
+    agent.stop();
+    if (originalNavigator) Object.defineProperty(globalThis, "navigator", originalNavigator);
+    else delete (globalThis as { navigator?: unknown }).navigator;
+    if (originalPeerConnection) Object.defineProperty(globalThis, "RTCPeerConnection", originalPeerConnection);
+    else delete (globalThis as { RTCPeerConnection?: unknown }).RTCPeerConnection;
+    if (originalAudio) Object.defineProperty(globalThis, "Audio", originalAudio);
+    else delete (globalThis as { Audio?: unknown }).Audio;
+  }
+});
+
+test("accepting with greet off starts a normal session that waits for the user", async () => {
+  const originalNavigator = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+  const originalPeerConnection = Object.getOwnPropertyDescriptor(globalThis, "RTCPeerConnection");
+  const originalAudio = Object.getOwnPropertyDescriptor(globalThis, "Audio");
+  const track = { enabled: true, muted: false, readyState: "live", stop() {}, onmute: null, onunmute: null, onended: null };
+  const stream = { getTracks: () => [track], getAudioTracks: () => [track] } as unknown as MediaStream;
+  const sent: string[] = [];
+  const dcs: { readyState: string; send(message: string): void; close(): void; onopen: (() => void) | null; onclose: (() => void) | null; onmessage: ((message: unknown) => void) | null }[] = [];
+
+  class FakePeerConnection {
+    iceGatheringState = "complete";
+    connectionState = "new";
+    localDescription: RTCSessionDescriptionInit | null = null;
+    ontrack: ((event: RTCTrackEvent) => void) | null = null;
+    onconnectionstatechange: (() => void) | null = null;
+    oniceconnectionstatechange: (() => void) | null = null;
+    addTrack() {}
+    addEventListener() {}
+    removeEventListener() {}
+    close() {}
+    createDataChannel() {
+      const dc = {
+        readyState: "open",
+        send: (message: string) => sent.push(message),
+        close() {},
+        onopen: null,
+        onclose: null,
+        onmessage: null,
+      };
+      dcs.push(dc);
+      return dc;
+    }
+    async createOffer() {
+      return { type: "offer" as const, sdp: "offer" };
+    }
+    async setLocalDescription(description: RTCSessionDescriptionInit) {
+      this.localDescription = description;
+    }
+    async setRemoteDescription() {}
+  }
+
+  class FakeAudio {
+    autoplay = false;
+    srcObject: MediaStream | null = null;
+    async play() {}
+    remove() {}
+  }
+
+  Object.defineProperty(globalThis, "navigator", {
+    configurable: true,
+    value: {
+      mediaDevices: {
+        getUserMedia: async () => stream,
+        enumerateDevices: async () => [{ deviceId: "mic-1", kind: "audioinput", label: "Built-in Mic" }],
+      },
+    },
+  });
+  Object.defineProperty(globalThis, "RTCPeerConnection", { configurable: true, value: FakePeerConnection });
+  Object.defineProperty(globalThis, "Audio", { configurable: true, value: FakeAudio });
+
+  const agent = new VoiceAgent();
+  agent.bind({
+    rpc: { call: (async (method: string) => (method === "createCall" ? { sdp: "answer" } : { ok: true })) as never },
+    context: { threadId: null, projectId: null, onNewThreadScreen: false },
+    openNewThread() {},
+  });
+
+  try {
+    agent.acceptInvite("Quiet brief", "no greeting please", { greet: false });
+    const currentDc = () => dcs[dcs.length - 1] ?? null;
+    for (let i = 0; i < 20 && !currentDc(); i++) await new Promise((resolve) => setImmediate(resolve));
+    const channel = currentDc();
+    assert.ok(channel, "expected the data channel to be created");
+    channel.onopen?.();
+    assert.equal(agent.getState(), "live");
+    assert.equal(sent.length, 0);
+  } finally {
+    agent.stop();
+    if (originalNavigator) Object.defineProperty(globalThis, "navigator", originalNavigator);
+    else delete (globalThis as { navigator?: unknown }).navigator;
+    if (originalPeerConnection) Object.defineProperty(globalThis, "RTCPeerConnection", originalPeerConnection);
+    else delete (globalThis as { RTCPeerConnection?: unknown }).RTCPeerConnection;
+    if (originalAudio) Object.defineProperty(globalThis, "Audio", originalAudio);
+    else delete (globalThis as { Audio?: unknown }).Audio;
+  }
+});

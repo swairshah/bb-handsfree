@@ -704,6 +704,8 @@ export function SessionsPanel() {
 
   // Cross-surface presence: mirror a call owned by another realm so the console
   // reflects it, and relay stop/mute from the console back to the owning realm.
+  // (Incoming-call invites ring through the app-wide overlay instead — one
+  // ringer everywhere, so this page mounts no invite listener of its own.)
   useRealtime("voice-presence", (payload) => voiceAgent.ingestPresence(payload));
   useRealtime("voice-command", (payload) => voiceAgent.applyVoiceCommand(payload));
   useRealtime("voice-presence-query", () => voiceAgent.answerPresenceQuery());

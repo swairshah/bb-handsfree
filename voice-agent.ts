@@ -189,6 +189,12 @@ export class VoiceAgent {
   private responseActive = false;
   /** A response.create is owed once the active response finishes. */
   private responsePending = false;
+  /**
+   * The invite this call was accepted from (see acceptInvite), consumed when
+   * the data channel opens so Aide greets first with the call's reason.
+   * Cleared by stop() — a call that never goes live owes no greeting.
+   */
+  private pendingInviteGreeting: { title: string; briefing: string; greet: boolean } | null = null;
   // ---- thread-event notifications (see server: `notifications` setting) ----
   /** Pending thread events, deduped per thread; latest state wins. */
   private pendingNotices = new Map<string, ThreadEventNotice>();
@@ -519,6 +525,21 @@ export class VoiceAgent {
     if (this.hasLocalCall()) return this.toggle();
     const remote = this.remotePresenceLive();
     if (remote) return this.stopRemote(remote.nonce);
+    void this.start();
+  }
+
+  /**
+   * Accept an incoming call invite: starts like toggleFromSurface, but carries
+   * the call's reason along so Aide speaks first on open (see greetIfInvited)
+   * instead of waiting for the user. Pass `{ greet: false }` (the "Aide
+   * speaks first" setting off) to start a normal session that waits for the
+   * user instead.
+   */
+  acceptInvite(title: string, briefing: string, opts?: { greet?: boolean }) {
+    if (this.hasLocalCall()) return this.toggle();
+    const remote = this.remotePresenceLive();
+    if (remote) return this.stopRemote(remote.nonce);
+    this.pendingInviteGreeting = { title, briefing, greet: opts?.greet ?? true };
     void this.start();
   }
 
@@ -908,6 +929,37 @@ export class VoiceAgent {
     dc.send(JSON.stringify({ type: "response.create" }));
   }
 
+  /**
+   * If this call was accepted from an incoming invite (and greeting is on),
+   * Aide speaks first: the call's reason goes in as a system instruction and
+   * a response is requested immediately, instead of waiting for the user to
+   * talk. Consumed once — a later reconnect in the same session must not
+   * re-greet.
+   */
+  private greetIfInvited(dc: RTCDataChannel) {
+    const invite = this.pendingInviteGreeting;
+    this.pendingInviteGreeting = null;
+    if (!invite || !invite.greet || dc.readyState !== "open") return;
+    const reason = invite.briefing ? ` — ${invite.briefing}` : "";
+    this.log("invite.greet", { title: invite.title });
+    dc.send(
+      JSON.stringify({
+        type: "conversation.item.create",
+        item: {
+          type: "message",
+          role: "system",
+          content: [
+            {
+              type: "input_text",
+              text: `[bb incoming call] You placed this call ("${invite.title}"${reason}) and the user just accepted. Greet them in one short sentence and open the topic directly — do not wait for them to speak first and do not ask "how can I help". Ground everything in the call reason above; reach for your tools when you need live facts.`,
+            },
+          ],
+        },
+      }),
+    );
+    this.requestResponse(dc);
+  }
+
   stop() {
     const endedNonce = this.nonce;
     if (this.session) this.log("session.stopped");
@@ -921,6 +973,7 @@ export class VoiceAgent {
     this.setResponseActive(false);
     this.setAssistantSpeaking(false);
     this.responsePending = false;
+    this.pendingInviteGreeting = null;
     this.pendingNotices.clear();
     this.recentNoticeFingerprints.clear();
     if (this.noticeTimer) clearTimeout(this.noticeTimer);
@@ -1204,6 +1257,7 @@ export class VoiceAgent {
           this.startPresenceHeartbeat();
           this.log("session.live");
           this.logDiag("conn.dc.open");
+          this.greetIfInvited(dc);
         }
       };
       dc.onclose = () => this.logDiag("conn.dc.close");

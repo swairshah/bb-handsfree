@@ -93,6 +93,9 @@ bb handsfree live --json     # machine-readable
 bb handsfree read thr_xxxxx  # a thread's status + latest assistant output
 bb handsfree usage           # what your voice sessions cost, per day (estimated)
 bb handsfree stop            # stop an active voice session in any bb window
+bb handsfree ring --title "Morning brief" --briefing "Plan the day"  # ring every window with an incoming-call invite
+                             # flags: --ttl 60 (10-600s), --banner (native OS banner, opt-in)
+                               # add --ttl 60, or --no-banner to skip the native OS banner
 ```
 
 Agents discover these commands automatically through bb's plugin-commands
@@ -107,6 +110,9 @@ Open the Handsfree plugin settings for curated sections:
   credential Aide will use.
 - **Behavior** — whether Aide announces thread events, and which installed
   plugins' `bb` commands it may run (all / none / a specific list).
+- **Incoming calls** — whether automations may ring this device (`bb
+  handsfree ring`), the ringtone, how long Snooze waits, and whether Aide
+  speaks first with the call reason when you pick up.
 - **Audio** — pick and test the microphone with a live input-level meter. The
   chosen mic is stored in the current browser and applies to the next voice
   session; if it disconnects, Handsfree falls back to the system default.

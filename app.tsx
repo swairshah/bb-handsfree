@@ -20,10 +20,11 @@ import type { PluginThreadListProps } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "./server";
 import { clientDescriptor } from "./client-identity";
 import { voiceAgent } from "./voice-agent";
+import { GlobalInviteOverlay } from "./voice-invite.tsx";
 import { SessionsPanel } from "./sessions-panel";
 import { viewWorkspace } from "./view-workspace";
 import { COMPANION_TAB, CompanionTab, THREAD_WORKSPACE_ACTION } from "./companion";
-import { AudioSettings, BehaviorSettings, ModelsSettings, ShortcutsSettings } from "./settings-sections";
+import { AudioSettings, BehaviorSettings, IncomingCallsSettings, ModelsSettings, ShortcutsSettings } from "./settings-sections";
 import { cn } from "@/lib/utils";
 import { AUDIO_DEVICE_STORAGE_KEY } from "./audio-devices";
 import { MicIcon, StopIcon, WaveformIcon, useCallElapsed } from "./voice-chrome";
@@ -357,6 +358,11 @@ export default definePluginApp((app) => {
     component: BehaviorSettings,
   });
   app.slots.settingsSection({
+    id: "incoming-calls",
+    title: "Incoming calls",
+    component: IncomingCallsSettings,
+  });
+  app.slots.settingsSection({
     id: "audio",
     title: "Audio",
     component: AudioSettings,
@@ -420,6 +426,14 @@ export default definePluginApp((app) => {
     title: "Handsfree voice bar",
     description: "Adds a persistent voice control bar above the thread list.",
     component: ThreadListWithVoiceBar,
+  });
+  // Tier-0 autonomous invocation: one app-wide incoming-call overlay, mounted
+  // on every page (threads, Handsfree, settings, other plugins' pages) so an
+  // invite rings wherever the user happens to be. Null-safe by design: with
+  // no invite it renders nothing.
+  app.slots.experimental_appOverlay({
+    id: "incoming-call",
+    component: GlobalInviteOverlay,
   });
   // The session deliberately outlives any component, so tie it to the plugin
   // frontend generation instead: on reload/disable the old bundle's singleton

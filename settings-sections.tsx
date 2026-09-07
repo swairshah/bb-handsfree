@@ -57,6 +57,10 @@ interface VoiceConfig {
   pluginCommands: string;
   credentialPreference: CredentialPreference;
   shortcuts: Shortcuts;
+  incomingCalls: boolean;
+  ringtone: boolean;
+  snoozeMinutes: number;
+  greetFirst: boolean;
 }
 
 /**
@@ -261,8 +265,7 @@ export function ModelsSettings() {
 
   return (
     <div className="space-y-4">
-      <CredentialCard />
-      <label className="block space-y-1">
+      <CredentialCard />      <label className="block space-y-1">
         <span className="text-sm font-medium text-foreground">Model</span>
         <select
           value={model}
@@ -298,7 +301,23 @@ export function ModelsSettings() {
           ))}
         </select>
       </label>
+      <BuildStamp />
     </div>
+  );
+}
+
+/**
+ * Visible frontend build marker (Settings → Plugins → Handsfree → Model &
+ * voice): bump BUILD_STAMP with each iteration so a device can prove which
+ * bundle it is actually running — webviews are aggressive JS cachers.
+ */
+export const BUILD_STAMP = "ring-v10";
+
+function BuildStamp() {
+  return (
+    <p className="text-[11px] tabular-nums text-muted-foreground/60" title="Frontend build marker">
+      Build {BUILD_STAMP}
+    </p>
   );
 }
 
@@ -390,6 +409,83 @@ export function BehaviorSettings() {
 
 const linkClass =
   "text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline";
+
+// ---------------------------------------------------------------------------
+// Incoming calls: whether automations may ring this device, and how the
+// overlay behaves when they do. The briefing itself (what the call is about)
+// travels with each invite — set it where the call is scheduled
+// (bb handsfree ring --briefing, or the automation's prompt).
+// ---------------------------------------------------------------------------
+
+const SNOOZE_OPTIONS = [5, 10, 15, 30];
+
+export function IncomingCallsSettings() {
+  const { config, update } = useVoiceConfig();
+  const loading = config === null;
+  const incomingCalls = config?.incomingCalls ?? true;
+  const ringtone = config?.ringtone ?? true;
+  const snoozeMinutes = config?.snoozeMinutes ?? 10;
+  const greetFirst = config?.greetFirst ?? true;
+
+  return (
+    <div className="space-y-5">
+      <Group label="Ringing" hint="Automations and bb handsfree ring reach every connected device; each device follows these settings.">
+        <label className="flex items-center justify-between gap-3">
+          <span className="text-sm text-foreground">Allow incoming calls</span>
+          <input
+            type="checkbox"
+            checked={incomingCalls}
+            disabled={loading}
+            onChange={(event) => void update({ incomingCalls: event.target.checked })}
+            className="size-4 shrink-0 accent-primary"
+          />
+        </label>
+        <label className="flex items-center justify-between gap-3">
+          <span className="text-sm text-foreground">Play a ringtone while ringing</span>
+          <input
+            type="checkbox"
+            checked={ringtone}
+            disabled={loading || !incomingCalls}
+            onChange={(event) => void update({ ringtone: event.target.checked })}
+            className="size-4 shrink-0 accent-primary"
+          />
+        </label>
+        <div>
+          <label htmlFor="handsfree-snooze" className="mb-2 block text-sm">Snooze rings again after</label>
+          <select
+            id="handsfree-snooze"
+            className={selectClass}
+            disabled={loading || !incomingCalls}
+            value={snoozeMinutes}
+            onChange={(event) => void update({ snoozeMinutes: Number(event.target.value) })}
+          >
+            {SNOOZE_OPTIONS.includes(snoozeMinutes) ? null : (
+              <option value={snoozeMinutes}>{snoozeMinutes} minutes (custom)</option>
+            )}
+            {SNOOZE_OPTIONS.map((minutes) => (
+              <option key={minutes} value={minutes}>
+                {minutes} minutes
+              </option>
+            ))}
+          </select>
+        </div>
+      </Group>
+
+      <Group label="Answering" hint="What Aide knows when you pick up: the call reason from the invite, plus the thread and project in view.">
+        <label className="flex items-center justify-between gap-3">
+          <span className="text-sm text-foreground">Aide speaks first with the call reason</span>
+          <input
+            type="checkbox"
+            checked={greetFirst}
+            disabled={loading || !incomingCalls}
+            onChange={(event) => void update({ greetFirst: event.target.checked })}
+            className="size-4 shrink-0 accent-primary"
+          />
+        </label>
+      </Group>
+    </div>
+  );
+}
 
 /** A small link that opens a read-only list of Aide's built-in tools. */
 function BuiltInToolsLink() {

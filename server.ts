@@ -21,6 +21,7 @@ import {
 } from "./models";
 import { sessionEventLog } from "./session-events.ts";
 import { DEFAULT_SHORTCUTS, isValidShortcut, normalizeShortcuts, type Shortcuts } from "./shortcuts";
+import { INVITE_CHANNEL, INVITE_RESOLVED_CHANNEL } from "./voice-invite.ts";
 
 /**
  * Rebindable keyboard shortcuts (see shortcuts.ts): each value is a
@@ -127,6 +128,10 @@ export const rpcContract = defineRpcContract({
         pluginCommands: z.string(),
         credentialPreference: z.enum(["auto", "apiKey", "subscription"]),
         shortcuts: shortcutsSchema,
+        incomingCalls: z.boolean(),
+        ringtone: z.boolean(),
+        snoozeMinutes: z.number(),
+        greetFirst: z.boolean(),
       })
       .strict(),
   },
@@ -141,6 +146,10 @@ export const rpcContract = defineRpcContract({
         pluginCommands: z.string().max(2000).optional(),
         credentialPreference: z.enum(["auto", "apiKey", "subscription"]).optional(),
         shortcuts: shortcutsSchema.optional(),
+        incomingCalls: z.boolean().optional(),
+        ringtone: z.boolean().optional(),
+        snoozeMinutes: z.number().int().min(1).max(120).optional(),
+        greetFirst: z.boolean().optional(),
       })
       .strict(),
     output: z
@@ -152,6 +161,10 @@ export const rpcContract = defineRpcContract({
         pluginCommands: z.string(),
         credentialPreference: z.enum(["auto", "apiKey", "subscription"]),
         shortcuts: shortcutsSchema,
+        incomingCalls: z.boolean(),
+        ringtone: z.boolean(),
+        snoozeMinutes: z.number().int().min(1).max(120),
+        greetFirst: z.boolean(),
       })
       .strict(),
   },
@@ -264,6 +277,16 @@ export const rpcContract = defineRpcContract({
    */
   forceStop: {
     input: z.object({ nonce: z.string().min(1) }).strict(),
+    output: z.object({ ok: z.literal(true) }).strict(),
+  },
+  /**
+   * Resolve an incoming-call invite from any surface: the server rebroadcasts
+   * so every other surface stops ringing it (frontends are subscribe-only and
+   * cannot tell each other directly). Answering also releases the other
+   * surfaces; snooze stays local by design and needs no call here.
+   */
+  resolveInvite: {
+    input: z.object({ inviteId: z.string().min(1), action: z.enum(["answered", "dismissed"]) }).strict(),
     output: z.object({ ok: z.literal(true) }).strict(),
   },
   /** List voice sessions, newest first, with counts and estimated cost. */
@@ -513,6 +536,10 @@ export default async function plugin(bb: BbPluginApi) {
     pluginCommands: string;
     credentialPreference: CredentialPreference;
     shortcuts: Shortcuts;
+    incomingCalls: boolean;
+    ringtone: boolean;
+    snoozeMinutes: number;
+    greetFirst: boolean;
   }
   const CONFIG_KEY = "config";
   const CONFIG_DEFAULTS: VoiceConfig = {
@@ -523,9 +550,17 @@ export default async function plugin(bb: BbPluginApi) {
     pluginCommands: "all",
     credentialPreference: "auto",
     shortcuts: { ...DEFAULT_SHORTCUTS },
+    incomingCalls: true,
+    ringtone: true,
+    snoozeMinutes: 10,
+    greetFirst: true,
   };
   async function readConfig(): Promise<VoiceConfig> {
     const stored = (await bb.storage.kv.get<Partial<VoiceConfig> & { viewBehavior?: string }>(CONFIG_KEY)) ?? {};
+    const snoozeMinutes =
+      typeof stored.snoozeMinutes === "number" && Number.isInteger(stored.snoozeMinutes)
+        ? Math.min(Math.max(stored.snoozeMinutes, 1), 120)
+        : CONFIG_DEFAULTS.snoozeMinutes;
     return {
       model: isModel(stored.model) ? stored.model : CONFIG_DEFAULTS.model,
       voice: isVoice(stored.voice) ? stored.voice : CONFIG_DEFAULTS.voice,
@@ -538,6 +573,11 @@ export default async function plugin(bb: BbPluginApi) {
         ? stored.credentialPreference
         : CONFIG_DEFAULTS.credentialPreference,
       shortcuts: normalizeShortcuts(stored.shortcuts),
+      incomingCalls:
+        typeof stored.incomingCalls === "boolean" ? stored.incomingCalls : CONFIG_DEFAULTS.incomingCalls,
+      ringtone: typeof stored.ringtone === "boolean" ? stored.ringtone : CONFIG_DEFAULTS.ringtone,
+      snoozeMinutes,
+      greetFirst: typeof stored.greetFirst === "boolean" ? stored.greetFirst : CONFIG_DEFAULTS.greetFirst,
     };
   }
   async function writeConfig(patch: Partial<VoiceConfig>): Promise<VoiceConfig> {
@@ -1088,6 +1128,7 @@ export default async function plugin(bb: BbPluginApi) {
       { name: "stop", summary: "Stop any active Aide voice session in any bb window.", usage: "bb handsfree stop" },
       { name: "mute", summary: "Mute the active voice session's microphone (call stays up).", usage: "bb handsfree mute" },
       { name: "unmute", summary: "Unmute the active voice session's microphone.", usage: "bb handsfree unmute" },
+      { name: "ring", summary: "Ring every connected bb window with an incoming voice-call invite (Tier-0 autonomous invocation).", usage: 'bb handsfree ring [--title "..."] [--briefing "..."] [--ttl 60] [--banner]' },
     ],
     async run(argv) {
       const [command, ...rest] = argv;
@@ -1100,6 +1141,8 @@ export default async function plugin(bb: BbPluginApi) {
         "  bb handsfree usage [--days N] [--json] voice-session tokens and estimated cost",
         "  bb handsfree stop                     stop any active voice session",
         "  bb handsfree mute | unmute            mute/unmute the active session's mic",
+        '  bb handsfree ring [--title "..."]     ring every window with an incoming-call invite',
+        '    --briefing "..." --ttl 60 --banner (native OS banner, opt-in while flaky)',
       ].join("\n");
       try {
         if (command === undefined || command === "help" || command === "--help" || command === "-h") {
@@ -1114,6 +1157,57 @@ export default async function plugin(bb: BbPluginApi) {
           // session whose nonce differs — an unknown nonce stops them all.
           bb.realtime.publish("voice-call", { nonce: `cli-stop-${Date.now()}` });
           return { exitCode: 0, stdout: "Stop signal broadcast to all bb windows." };
+        }
+        if (command === "ring") {
+          // Tier-0 autonomous invocation ("the call"): broadcast an
+          // incoming-call invite that every connected surface rings on until
+          // the user accepts (which starts a normal voice session),
+          // snoozes, dismisses, or the invite expires. Automations invoke
+          // this on a schedule instead of starting audio themselves — the
+          // human is the arbiter, so no mic-busy detection is needed.
+          const { incomingCalls, ringtone } = await readConfig();
+          if (!incomingCalls) {
+            return { exitCode: 0, stdout: "Incoming calls are disabled in settings; not ringing." };
+          }
+          const flag = (name: string): string | null => {
+            const index = rest.indexOf(`--${name}`);
+            if (index < 0) return null;
+            const value = rest[index + 1];
+            return value !== undefined && !value.startsWith("--") ? value : null;
+          };
+          const title = flag("title")?.trim() || "Aide wants to talk";
+          const briefing = flag("briefing")?.trim() || "";
+          const ttlSec = Math.min(Math.max(Number(flag("ttl") ?? 60) || 60, 10), 600);
+          const now = Date.now();
+          const invite = {
+            inviteId: `inv-${now.toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+            title: title.slice(0, 120),
+            briefing: briefing.slice(0, 500),
+            createdAt: now,
+            expiresAt: now + ttlSec * 1000,
+          };
+          bb.realtime.publish(INVITE_CHANNEL, invite);
+          bb.log.info(`voice-invite published: ${invite.inviteId} "${invite.title}"`);
+          // Native banner is opt-in while unreliable (see PR #32): valid
+          // publishes on the push plugin's channel repeatedly never display,
+          // though identical test/thread banners do. Toast is the default.
+          if (ringtone && rest.includes("--banner")) {
+            // Native OS banner (macOS Notification Center included) via the
+            // push plugin's global "notification" listener: reaches
+            // backgrounded tabs and the desktop app, where our overlay can't
+            // be seen. Needs Notification permission on that client; mobile
+            // webviews ignore this channel (Expo path instead — see HF-12).
+            // Clicking focuses BB; threadId null means no navigation.
+            bb.realtime.publish("notification", {
+              id: invite.inviteId,
+              title: `Aide calling: ${invite.title}`.slice(0, 80),
+              body: (invite.briefing || "Accept the call in BB to talk.").slice(0, 180),
+              threadId: null,
+              channels: ["web", "desktop"],
+            });
+            bb.log.info(`invite banner published: ${invite.inviteId}`);
+          }
+          return { exitCode: 0, stdout: `Ringing all bb windows: "${invite.title}" (${invite.inviteId}, expires in ${ttlSec}s).` };
         }
         if (command === "live") {
           const live = await liveThreads();
@@ -1353,6 +1447,10 @@ export default async function plugin(bb: BbPluginApi) {
       bb.realtime.publish("voice-presence", { nonce, phase: "idle", startedAt: null });
       bb.realtime.publish("voice-command", { nonce, action: "stop" });
       bb.realtime.publish("aide-log", { sessionId: nonce });
+      return { ok: true as const };
+    },
+    async resolveInvite({ inviteId, action }) {
+      bb.realtime.publish(INVITE_RESOLVED_CHANNEL, { inviteId, action });
       return { ok: true as const };
     },
     async listSessions(input) {
