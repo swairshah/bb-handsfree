@@ -199,6 +199,20 @@ test("requires reading the thread when a completion has no result", () => {
   assert.match(instruction, /call read_thread with that thread_id before speaking/);
 });
 
+test("requires fetching the error when a failed thread has no result", () => {
+  const { instruction } = formatThreadNotices([
+    {
+      kind: "failed",
+      threadId: "thr_failed",
+      title: "Background task",
+      detail: null,
+    },
+  ]);
+
+  assert.match(instruction, /latest_result: unavailable/);
+  assert.match(instruction, /call get_thread_error with that thread_id before speaking/);
+});
+
 test("stopping during the SDP exchange closes the mic and cancels startup", async () => {
   const originalNavigator = Object.getOwnPropertyDescriptor(globalThis, "navigator");
   const originalPeerConnection = Object.getOwnPropertyDescriptor(globalThis, "RTCPeerConnection");

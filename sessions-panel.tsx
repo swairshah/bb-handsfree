@@ -217,6 +217,7 @@ const ACTIONS: Record<string, { family: ActionFamily; verb: string }> = {
   list_threads: { family: "inspect", verb: "Listed threads" },
   search_threads: { family: "inspect", verb: "Searched threads" },
   read_thread: { family: "inspect", verb: "Read a thread" },
+  get_thread_error: { family: "inspect", verb: "Read a thread error" },
   focus_thread: { family: "navigate", verb: "Showed a thread" },
   focus_threads: { family: "navigate", verb: "Showed threads" },
   manage_views: { family: "navigate", verb: "Updated views" },
