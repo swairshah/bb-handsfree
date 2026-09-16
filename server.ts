@@ -21,6 +21,12 @@ import {
 } from "./models";
 import { sessionEventLog } from "./session-events.ts";
 import { DEFAULT_SHORTCUTS, isValidShortcut, normalizeShortcuts, type Shortcuts } from "./shortcuts";
+import {
+  THREAD_ERROR_EVENT_TYPES,
+  THREAD_OUTCOME_EVENT_TYPES,
+  latestThreadError,
+  latestThreadOutcome,
+} from "./thread-errors";
 
 /**
  * Rebindable keyboard shortcuts (see shortcuts.ts): each value is a
@@ -412,7 +418,8 @@ export function toolSchemas(pluginCommands: PluginCommandInfo[] = [], mobile = f
     { type: "function", name: "list_live_threads", description: "List the threads in the Live threads sidebar section: running right now (active/starting/provisioning/waiting), plus threads that finished within the last 30 minutes (status 'recently-finished'). Only threads without a 'recently-finished' status are still working." },
     { type: "function", name: "list_threads", description: "List recent bb threads (id, title, status). Optionally filter by project id.", parameters: { type: "object", properties: { project_id: { type: "string" }, limit: { type: "number", description: "Max threads to return (default 15)." } } } },
     { type: "function", name: "search_threads", description: "Full-text search bb threads by title/content. Returns matching thread ids and titles.", parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"] } },
-    { type: "function", name: "read_thread", description: "Read a thread's details and its latest assistant output.", parameters: { type: "object", properties: { thread_id: { type: "string" } }, required: ["thread_id"] } },
+    { type: "function", name: "read_thread", description: "Read a thread's details and latest assistant output. When no output exists, also returns the latest terminal outcome, including failure or interruption reasons.", parameters: { type: "object", properties: { thread_id: { type: "string" } }, required: ["thread_id"] } },
+    { type: "function", name: "get_thread_error", description: "Get the latest recorded error for a thread. Call this before explaining a thread whose status is error, especially when read_thread has no assistant output.", parameters: { type: "object", properties: { thread_id: { type: "string" } }, required: ["thread_id"] } },
     { type: "function", name: "focus_thread", description: mobile ? "Show a thread in the mobile drawer without leaving the call. Reopening a thread selects its existing view. disposition: auto uses the mobile preference, reuse replaces the active view, new keeps existing views." : "Open/focus a thread in the user's bb app window, navigating to that thread.", parameters: { type: "object", properties: { thread_id: { type: "string" }, ...(mobile ? { disposition: { type: "string", enum: ["auto", "reuse", "new"] } } : {}) }, required: ["thread_id"] } },
     { type: "function", name: "focus_threads", description: "Show several threads in the mobile drawer switcher, preserving existing views. To show all running threads, first call list_live_threads and exclude recently-finished entries; pass their IDs here. Up to 100 per batch; split larger lists into batches.", parameters: { type: "object", properties: { thread_ids: { type: "array", items: { type: "string" }, minItems: 1, maxItems: 100 } }, required: ["thread_ids"] } },
     { type: "function", name: "manage_views", description: "List, select, or close the views in the mobile drawer. Get view IDs using list. clear closes all views only when the user asks. Closing a view does not stop its thread or the call.", parameters: { type: "object", properties: { action: { type: "string", enum: ["list", "select", "close", "clear"] }, view_id: { type: "string" } }, required: ["action"] } },
@@ -448,6 +455,7 @@ Rules:
 - When reading agent output aloud, give a one-or-two-sentence summary; never read code or ids verbatim.
 - Prefer focus_thread so the user sees what you are talking about.
 - While a voice session is active, bb sends you updates when visible threads finish or fail (when Announcements is enabled). You can notify the user: if they ask to be told when a thread finishes, say yes, then announce the update in one short sentence when it arrives. Always name the thread by its title in that sentence; several threads may be running, so a bare "it finished" is ambiguous. Never claim that you cannot notify them, and do not poll the thread.
+- When read_thread returns lastOutcome, report that outcome plainly instead of guessing why output is missing. When a thread has status error and read_thread still does not explain why, call get_thread_error with that thread id before answering. Never say no details are available without checking.
 - Threads run on a machine. start_thread uses the project's default machine unless you pass machine_id — when the project is on several connected machines and the user didn't name one, use list_machines and ask one short question (e.g. "On your MacBook or the studio?") before starting.
 - When the user asks you to permanently behave differently ("always …", "from now on …"), use update_instructions to amend these standing instructions.`;
 
@@ -924,7 +932,31 @@ export default async function plugin(bb: BbPluginApi) {
         const thread = await bb.sdk.threads.get({ threadId });
         const { output } = await bb.sdk.threads.output({ threadId });
         const [described] = await withMachines([describeThread(thread)]);
-        return JSON.stringify({ ...described, lastAssistantOutput: output ? truncate(output) : null });
+        const lastOutcome = output
+          ? null
+          : latestThreadOutcome(
+              await bb.sdk.threads.events.list({
+                threadId,
+                order: "desc",
+                limit: "100",
+                types: THREAD_OUTCOME_EVENT_TYPES,
+              }),
+            );
+        return JSON.stringify({
+          ...described,
+          lastAssistantOutput: output ? truncate(output) : null,
+          lastOutcome,
+        });
+      }
+      case "get_thread_error": {
+        const threadId = str("thread_id");
+        const events = await bb.sdk.threads.events.list({
+          threadId,
+          order: "desc",
+          limit: "100",
+          types: THREAD_ERROR_EVENT_TYPES,
+        });
+        return JSON.stringify({ threadId, error: latestThreadError(events) });
       }
       case "set_view_behavior": {
         const behavior = str("behavior");

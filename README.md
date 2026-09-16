@@ -168,7 +168,7 @@ response.create).
 
 Voice tools: `get_context`, `list_projects`, `list_machines`,
 `list_live_threads`, `list_threads`, `search_threads`, `read_thread`,
-`focus_thread`, `set_pane`, `send_to_thread`, `start_thread`, `stop_thread`,
+`get_thread_error`, `focus_thread`, `set_pane`, `send_to_thread`, `start_thread`, `stop_thread`,
 `archive_thread`, `rename_thread`, `show_diff`, `update_instructions`,
 `run_plugin_cli`, plus frontend-local `set_composer_text` /
 `append_composer_text`.
