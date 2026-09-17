@@ -418,8 +418,8 @@ export function toolSchemas(pluginCommands: PluginCommandInfo[] = [], mobile = f
     { type: "function", name: "list_live_threads", description: "List the threads in the Live threads sidebar section: running right now (active/starting/provisioning/waiting), plus threads that finished within the last 30 minutes (status 'recently-finished'). Only threads without a 'recently-finished' status are still working." },
     { type: "function", name: "list_threads", description: "List recent bb threads (id, title, status). Optionally filter by project id.", parameters: { type: "object", properties: { project_id: { type: "string" }, limit: { type: "number", description: "Max threads to return (default 15)." } } } },
     { type: "function", name: "search_threads", description: "Full-text search bb threads by title/content. Returns matching thread ids and titles.", parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"] } },
-    { type: "function", name: "read_thread", description: "Read a thread's details and latest assistant output. When no output exists, also returns the latest terminal outcome, including failure or interruption reasons.", parameters: { type: "object", properties: { thread_id: { type: "string" } }, required: ["thread_id"] } },
-    { type: "function", name: "get_thread_error", description: "Get the latest recorded error for a thread. Call this before explaining a thread whose status is error, especially when read_thread has no assistant output.", parameters: { type: "object", properties: { thread_id: { type: "string" } }, required: ["thread_id"] } },
+    { type: "function", name: "read_thread", description: "Read a thread's details and latest assistant output. When no output exists, also returns the latest terminal outcome, including failure or interruption reasons. Call silently: do not speak before this tool; speak only after its result.", parameters: { type: "object", properties: { thread_id: { type: "string" } }, required: ["thread_id"] } },
+    { type: "function", name: "get_thread_error", description: "Get the latest recorded error for a thread. Call this before explaining a thread whose status is error, especially when read_thread has no assistant output. Call silently: do not speak before this tool; speak only after its result.", parameters: { type: "object", properties: { thread_id: { type: "string" } }, required: ["thread_id"] } },
     { type: "function", name: "focus_thread", description: mobile ? "Show a thread in the mobile drawer without leaving the call. Reopening a thread selects its existing view. disposition: auto uses the mobile preference, reuse replaces the active view, new keeps existing views." : "Open/focus a thread in the user's bb app window, navigating to that thread.", parameters: { type: "object", properties: { thread_id: { type: "string" }, ...(mobile ? { disposition: { type: "string", enum: ["auto", "reuse", "new"] } } : {}) }, required: ["thread_id"] } },
     { type: "function", name: "focus_threads", description: "Show several threads in the mobile drawer switcher, preserving existing views. To show all running threads, first call list_live_threads and exclude recently-finished entries; pass their IDs here. Up to 100 per batch; split larger lists into batches.", parameters: { type: "object", properties: { thread_ids: { type: "array", items: { type: "string" }, minItems: 1, maxItems: 100 } }, required: ["thread_ids"] } },
     { type: "function", name: "manage_views", description: "List, select, or close the views in the mobile drawer. Get view IDs using list. clear closes all views only when the user asks. Closing a view does not stop its thread or the call.", parameters: { type: "object", properties: { action: { type: "string", enum: ["list", "select", "close", "clear"] }, view_id: { type: "string" } }, required: ["action"] } },
@@ -450,6 +450,7 @@ The user talks to you to drive bb hands-free. You can list/search/read threads, 
 
 Rules:
 - Be extremely succinct. One short sentence by default ("Done.", "Focused.", "Sent."). Never narrate what you're about to do, never enumerate options, never restate the user's request. Add detail only when asked.
+- Tool lookups are silent. Never say "let me check", "I'll look", or any other progress preamble before a tool call. Call the tool first, then speak only when you have its result. This is especially important for automatic thread updates and for read_thread or get_thread_error.
 - Thread ids look like thr_x… and project ids like proj_x…. When the user names a thread by topic or title, find it with list_threads or search_threads first.
 - Never invent prompts, titles, or messages on the user's behalf. If required information is missing, ask one short question.
 - When reading agent output aloud, give a one-or-two-sentence summary; never read code or ids verbatim.
@@ -618,18 +619,57 @@ export default async function plugin(bb: BbPluginApi) {
   async function publishThreadEvent(kind: "idle" | "failed", thread: { id: string; title: string | null; visibility: string }, detail: string | null) {
     const { notifications } = await readConfig();
     if (!notifications || thread.visibility === "hidden") return;
+
+    // Resolve missing outcomes before notifying the voice model. Otherwise it
+    // has to call read_thread/get_thread_error itself and may speak a progress
+    // preamble before that lookup. This server-side fetch is intentionally
+    // silent, so the user hears only the grounded final announcement.
+    let resolvedDetail = detail;
+    if (!resolvedDetail?.trim()) {
+      try {
+        if (kind === "failed") {
+          const error = latestThreadError(
+            await bb.sdk.threads.events.list({
+              threadId: thread.id,
+              order: "desc",
+              limit: "100",
+              types: THREAD_ERROR_EVENT_TYPES,
+            }),
+          );
+          resolvedDetail = error?.detail ?? error?.message ?? null;
+        } else {
+          const { output } = await bb.sdk.threads.output({ threadId: thread.id });
+          if (output) {
+            resolvedDetail = output;
+          } else {
+            const outcome = latestThreadOutcome(
+              await bb.sdk.threads.events.list({
+                threadId: thread.id,
+                order: "desc",
+                limit: "100",
+                types: THREAD_OUTCOME_EVENT_TYPES,
+              }),
+            );
+            resolvedDetail = outcome?.message ?? null;
+          }
+        }
+      } catch (error) {
+        bb.log.warn(`could not resolve ${kind} notification for ${thread.id}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+
     bb.realtime.publish("aide-thread-event", {
       kind,
       threadId: thread.id,
       title: thread.title ?? "(untitled thread)",
-      detail: notificationDetail(detail),
+      detail: notificationDetail(resolvedDetail),
     });
   }
-  bb.events.on("thread.idle", ({ thread, lastAssistantText }) => {
-    void publishThreadEvent("idle", thread, lastAssistantText);
+  bb.events.on("thread.idle", async ({ thread, lastAssistantText }) => {
+    await publishThreadEvent("idle", thread, lastAssistantText);
   });
-  bb.events.on("thread.failed", ({ thread, error }) => {
-    void publishThreadEvent("failed", thread, error);
+  bb.events.on("thread.failed", async ({ thread, error }) => {
+    await publishThreadEvent("failed", thread, error);
   });
 
   // ---- Codex subscription auth ----

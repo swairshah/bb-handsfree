@@ -24,6 +24,49 @@ test("session history and plugin logs describe the same stored action, and faile
   } finally { await harness.lifecycle.dispose(); }
 });
 
+test("automatic failure notifications resolve missing error details before reaching the voice model", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "handsfree", sdk: {
+    threads: {
+      events: {
+        list: async () => [{
+          type: "provider/error",
+          data: {
+            message: "Provider error",
+            detail: "OAuth refresh failed because the refresh token expired.",
+          },
+          seq: 15,
+          createdAt: 123,
+        }],
+      },
+    },
+  } as any });
+  try {
+    await plugin(bb);
+    const prompt = await harness.behavior.callRpc("getPrompt", null) as { defaultContent: string };
+    assert.match(prompt.defaultContent, /Tool lookups are silent/);
+    assert.match(prompt.defaultContent, /Never say "let me check"/);
+    const delivered = await harness.behavior.emitThreadEvent("thread.failed", {
+      thread: makeThreadResponse({
+        id: "failed-thread",
+        title: "Check model support",
+        status: "error",
+        runtime: { displayStatus: "error", hostReconnectGraceExpiresAt: null },
+        visibility: "visible",
+      }),
+      error: null,
+    });
+    assert.deepEqual(delivered.errors, []);
+    const signal = harness.inspection.realtimeSignals.find(entry => entry.channel === "aide-thread-event");
+    assert.deepEqual(signal?.payload, {
+      kind: "failed",
+      threadId: "failed-thread",
+      title: "Check model support",
+      detail: "OAuth refresh failed because the refresh token expired.",
+    });
+    assert.equal(harness.inspection.sdk.callsTo("threads.events.list").length, 1);
+  } finally { await harness.lifecycle.dispose(); }
+});
+
 test("thread metadata is resolved once per ID and the saved preference applies immediately", async () => {
   const { bb, harness } = createFakePluginHost({ pluginId: "handsfree", sdk: {
     threads: { get: async ({ threadId }) => makeThreadResponse({ id: threadId, title: `Title ${threadId}`, projectId: "project" }) },
@@ -72,6 +115,11 @@ test("desktop calls retain the original focus tool and exclude mobile-only contr
   const focusMobile = mobile.find(tool => tool.name === "focus_thread") as any;
   assert.equal("disposition" in focusDesktop.parameters.properties, false);
   assert.equal("disposition" in focusMobile.parameters.properties, true);
+  for (const name of ["read_thread", "get_thread_error"]) {
+    const lookup = desktop.find(tool => tool.name === name) as any;
+    assert.match(lookup.description, /Call silently/);
+    assert.match(lookup.description, /speak only after its result/);
+  }
   assert.match(threadViewInstructions(false), /navigates to the requested thread/);
   assert.match(threadViewInstructions(true), /do not navigate away/);
   assert.deepEqual(toolSchemas(), desktop);

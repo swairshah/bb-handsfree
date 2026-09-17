@@ -196,7 +196,9 @@ test("requires reading the thread when a completion has no result", () => {
   ]);
 
   assert.match(instruction, /latest_result: unavailable/);
-  assert.match(instruction, /call read_thread with that thread_id before speaking/);
+  assert.match(instruction, /silently call read_thread with that thread_id as your first action/);
+  assert.match(instruction, /Emit no audio or text before the tool result/);
+  assert.match(instruction, /never say "let me check"/);
 });
 
 test("requires fetching the error when a failed thread has no result", () => {
@@ -210,7 +212,9 @@ test("requires fetching the error when a failed thread has no result", () => {
   ]);
 
   assert.match(instruction, /latest_result: unavailable/);
-  assert.match(instruction, /call get_thread_error with that thread_id before speaking/);
+  assert.match(instruction, /silently call get_thread_error with that thread_id as your first action/);
+  assert.match(instruction, /Emit no audio or text before the tool result/);
+  assert.match(instruction, /never say "let me check"/);
 });
 
 test("stopping during the SDP exchange closes the mic and cancels startup", async () => {
