@@ -457,7 +457,7 @@ export function toolSchemas(pluginCommands: PluginCommandInfo[] = [], mobile = f
     { type: "function", name: "set_view_behavior", description: "Save how future mobile drawer opens behave. Use only when the user asks for a lasting mobile preference: reuse replaces the active view; new keeps views in the switcher. Desktop always navigates normally. Explicit mobile requests and batches override this preference.", parameters: { type: "object", properties: { behavior: { type: "string", enum: ["reuse", "new"] } }, required: ["behavior"] } },
     { type: "function", name: "set_pane", description: "Change a thread pane's presentation in the bb app: spotlight, clear-spotlight, maximize, restore, or toggle.", parameters: { type: "object", properties: { thread_id: { type: "string" }, action: { type: "string", enum: ["spotlight", "clear-spotlight", "maximize", "restore", "toggle"] } }, required: ["thread_id", "action"] } },
     { type: "function", name: "send_to_thread", description: "Send a message to a thread's agent. Starts a turn if idle, queues/steers if running.", parameters: { type: "object", properties: { thread_id: { type: "string" }, message: { type: "string" } }, required: ["thread_id", "message"] } },
-    { type: "function", name: "start_thread", description: "Start a new agent thread in a project. Only pass prompt when the user dictated actual work; With no prompt, this opens bb's New thread screen for the user to type their own. Runs on the project's default machine unless machine_id is given — if the project lives on several connected machines and the user didn't say which, check list_machines and ask one short question instead of guessing.", parameters: { type: "object", properties: { project_id: { type: "string", description: "Project id; defaults to the user's current project." }, prompt: { type: "string", description: "The user's own instruction for the agent, verbatim. Omit if they didn't give one." }, title: { type: "string" }, machine_id: { type: "string", description: "Machine (host) id to run on, from list_machines. Omit to use the project's default machine." } } } },
+    { type: "function", name: "start_thread", description: "Start a new agent thread. Only pass prompt when the user dictated actual work; With no prompt, this opens bb's New thread screen for the user to type their own. Runs on the project's default machine unless machine_id is given — if the project lives on several connected machines and the user didn't say which, check list_machines and ask one short question instead of guessing. Threads can also run outside any project: pass the personal project's id from list_projects (or omit project_id when there is no current project) and the thread lands in the Personal section, no machine choice needed.", parameters: { type: "object", properties: { project_id: { type: "string", description: "Project id; defaults to the user's current project, or to the personal project when there is none." }, prompt: { type: "string", description: "The user's own instruction for the agent, verbatim. Omit if they didn't give one." }, title: { type: "string" }, machine_id: { type: "string", description: "Machine (host) id to run on, from list_machines. Omit to use the project's default machine." } } } },
     { type: "function", name: "stop_thread", description: "Stop a running thread.", parameters: { type: "object", properties: { thread_id: { type: "string" } }, required: ["thread_id"] } },
     { type: "function", name: "archive_thread", description: "Archive a thread (and its children).", parameters: { type: "object", properties: { thread_id: { type: "string" } }, required: ["thread_id"] } },
     { type: "function", name: "rename_thread", description: "Rename a thread.", parameters: { type: "object", properties: { thread_id: { type: "string" }, title: { type: "string" } }, required: ["thread_id", "title"] } },
@@ -488,7 +488,7 @@ Rules:
 - Prefer focus_thread so the user sees what you are talking about.
 - While a voice session is active, bb sends you updates when visible threads finish or fail (when Announcements is enabled). You can notify the user: if they ask to be told when a thread finishes, say yes, then announce the update in one short sentence when it arrives. Always name the thread by its title in that sentence; several threads may be running, so a bare "it finished" is ambiguous. Never claim that you cannot notify them, and do not poll the thread.
 - When read_thread returns lastOutcome, report that outcome plainly instead of guessing why output is missing. When a thread has status error and read_thread still does not explain why, call get_thread_error with that thread id before answering. Never say no details are available without checking.
-- Threads run on a machine. start_thread uses the project's default machine unless you pass machine_id — when the project is on several connected machines and the user didn't name one, use list_machines and ask one short question (e.g. "On your MacBook or the studio?") before starting.
+- Threads run on a machine. start_thread uses the project's default machine unless you pass machine_id — when the project is on several connected machines and the user didn't name one, use list_machines and ask one short question (e.g. "On your MacBook or the studio?") before starting. The personal project ("no project") is the exception: it needs no machine or git checkout — just start the thread and it appears in the Personal section.
 - When the user asks you to permanently behave differently ("always …", "from now on …"), use update_instructions to amend these standing instructions.`;
 
 export default async function plugin(bb: BbPluginApi) {
@@ -974,7 +974,7 @@ export default async function plugin(bb: BbPluginApi) {
       }
       case "list_projects": {
         const projects = await bb.sdk.projects.list({ includePersonal: true });
-        return JSON.stringify(projects.map((p) => ({ id: p.id, name: p.name })));
+        return JSON.stringify(projects.map((p) => ({ id: p.id, name: p.name, kind: p.kind })));
       }
       case "list_machines": {
         const hosts = await bb.sdk.hosts.list();
@@ -1074,28 +1074,68 @@ export default async function plugin(bb: BbPluginApi) {
         return "Message sent.";
       }
       case "start_thread": {
-        const projectId = typeof args.project_id === "string" && args.project_id ? args.project_id : context.projectId;
-        if (!projectId) throw new Error("No project selected. Ask the user or call list_projects.");
         const prompt = typeof args.prompt === "string" && args.prompt.trim() ? args.prompt : undefined;
         // Promptless start_thread is handled in the frontend (opens the New
         // thread screen); reaching here without one means that path failed.
         if (!prompt) throw new Error("No prompt given. Ask the user what the new thread should work on.");
         const machineId =
           typeof args.machine_id === "string" && args.machine_id ? args.machine_id : null;
-        const thread = await bb.sdk.threads.spawn({
-          projectId,
+        const requestedProjectId =
+          typeof args.project_id === "string" && args.project_id ? args.project_id : context.projectId;
+        const projects = await bb.sdk.projects.list({ includePersonal: true });
+        // No project anywhere means bb's "Don't work in a project": the thread
+        // goes to the implicit personal project and shows under Personal.
+        const project = requestedProjectId
+          ? projects.find((p) => p.id === requestedProjectId)
+          : projects.find((p) => p.kind === "personal");
+        if (!project) {
+          throw new Error(
+            requestedProjectId
+              ? `Unknown project: ${requestedProjectId}. Call list_projects.`
+              : "No project selected and no personal project exists. Ask the user or call list_projects.",
+          );
+        }
+        type SpawnEnvironment = Parameters<typeof bb.sdk.threads.spawn>[0]["environment"];
+        const spawn = (environment: SpawnEnvironment) =>
+          bb.sdk.threads.spawn({
+            projectId: project.id,
+            environment,
+            prompt,
+            ...(typeof args.title === "string" && args.title ? { title: args.title } : {}),
+          });
+        let thread: Awaited<ReturnType<typeof spawn>>;
+        if (project.kind === "personal") {
+          // Personal threads must use a personal workspace (no git checkout);
+          // managed worktrees are rejected with HTTP 400.
+          thread = await spawn({
+            type: "host",
+            ...(machineId ? { hostId: machineId } : {}),
+            workspace: { type: "personal" },
+          });
+        } else if (machineId) {
           // A named machine gets a fresh managed worktree from the default
-          // branch there; otherwise bb's project-default environment applies.
-          environment: machineId
-            ? {
-                type: "host",
-                hostId: machineId,
-                workspace: { type: "managed-worktree", baseBranch: { kind: "default" } },
-              }
-            : { type: "project-default" },
-          prompt,
-          ...(typeof args.title === "string" && args.title ? { title: args.title } : {}),
-        });
+          // branch there. Projects that aren't git repos can't have worktrees,
+          // so fall back to working directly in the project's source directory
+          // on that host.
+          try {
+            thread = await spawn({
+              type: "host",
+              hostId: machineId,
+              workspace: { type: "managed-worktree", baseBranch: { kind: "default" } },
+            });
+          } catch (error) {
+            const source = project.sources.find((s) => s.hostId === machineId);
+            if (!source) throw error;
+            thread = await spawn({
+              type: "host",
+              hostId: machineId,
+              workspace: { type: "unmanaged", path: source.path },
+            });
+          }
+        } else {
+          // bb's project-default environment applies.
+          thread = await spawn({ type: "project-default" });
+        }
         // `threads.open` navigates every connected window — which backgrounds a
         // live mobile call (and yanks other windows). The client sets focus:false
         // when it must not navigate; the thread still spawns and runs.
