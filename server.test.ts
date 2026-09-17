@@ -115,6 +115,18 @@ test("desktop calls retain the original focus tool and exclude mobile-only contr
   const focusMobile = mobile.find(tool => tool.name === "focus_thread") as any;
   assert.equal("disposition" in focusDesktop.parameters.properties, false);
   assert.equal("disposition" in focusMobile.parameters.properties, true);
+  const listProviders = desktop.find(tool => tool.name === "list_providers") as any;
+  assert.ok(listProviders.parameters.properties.provider_id);
+  assert.match(listProviders.description, /current thread environment/);
+  const sendToThread = desktop.find(tool => tool.name === "send_to_thread") as any;
+  assert.match(sendToThread.description, /Never use this for provider, model, reasoning/);
+  const setThreadModel = desktop.find(tool => tool.name === "set_thread_model") as any;
+  assert.match(setThreadModel.description, /without sending the agent a message or starting a turn/);
+  const startThread = desktop.find(tool => tool.name === "start_thread") as any;
+  assert.ok(startThread.parameters.properties.provider_id);
+  assert.ok(startThread.parameters.properties.model);
+  assert.deepEqual(startThread.parameters.required, undefined);
+  assert.match(startThread.description, /Omit provider_id and model/);
   for (const name of ["read_thread", "get_thread_error"]) {
     const lookup = desktop.find(tool => tool.name === name) as any;
     assert.match(lookup.description, /Call silently/);
@@ -123,6 +135,281 @@ test("desktop calls retain the original focus tool and exclude mobile-only contr
   assert.match(threadViewInstructions(false), /navigates to the requested thread/);
   assert.match(threadViewInstructions(true), /do not navigate away/);
   assert.deepEqual(toolSchemas(), desktop);
+});
+
+test("list_providers uses the current thread environment and lists exact models for one harness", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "handsfree", sdk: {
+    threads: {
+      get: async ({ threadId }: { threadId: string }) => makeThreadResponse({
+        id: threadId,
+        projectId: "project",
+        environmentId: "current-environment",
+        providerId: "pi",
+      }),
+    },
+    providers: {
+      list: async () => [
+        { id: "pi", displayName: "Pi", available: true, capabilities: { modelCatalogScope: "workspace" } },
+        { id: "offline", displayName: "Offline", available: false, capabilities: { modelCatalogScope: "host" } },
+      ],
+      models: async () => ({
+        modelLoadError: null,
+        models: [{
+          id: "openai-codex/gpt-5.6-sol",
+          model: "openai-codex/gpt-5.6-sol",
+          displayName: "GPT-5.6 Sol",
+          isDefault: true,
+          defaultReasoningEffort: "medium",
+        }],
+        selectedOnlyModels: [],
+      }),
+    },
+  } as any });
+  try {
+    await plugin(bb);
+    const listed = await harness.behavior.callRpc("runTool", {
+      name: "list_providers", args: {}, threadId: "current-thread", projectId: "project",
+    }) as any;
+    assert.equal(listed.status, "success");
+    assert.deepEqual(JSON.parse(listed.output), {
+      providers: [{ id: "pi", name: "Pi", modelCatalogScope: "workspace" }],
+    });
+
+    const withModels = await harness.behavior.callRpc("runTool", {
+      name: "list_providers", args: { provider_id: "Pi" }, threadId: "current-thread", projectId: "project",
+    }) as any;
+    assert.equal(withModels.status, "success");
+    assert.deepEqual(JSON.parse(withModels.output), {
+      provider: { id: "pi", name: "Pi" },
+      models: [{
+        id: "openai-codex/gpt-5.6-sol",
+        name: "GPT-5.6 Sol",
+        isDefault: true,
+        defaultReasoningLevel: "medium",
+      }],
+      totalModels: 1,
+      truncated: false,
+    });
+    assert.equal(harness.inspection.sdk.callsTo("threads.get").length, 2);
+    assert.equal(harness.inspection.sdk.callsTo("providers.models").length, 1);
+  } finally { await harness.lifecycle.dispose(); }
+});
+
+test("set_thread_model changes sticky configuration without messaging or starting the thread", async () => {
+  const updates: unknown[] = [];
+  const { bb, harness } = createFakePluginHost({ pluginId: "handsfree", sdk: {
+    threads: {
+      get: async ({ threadId }: { threadId: string }) => makeThreadResponse({
+        id: threadId,
+        projectId: "project",
+        environmentId: "current-environment",
+        providerId: "pi",
+        status: "idle",
+      }),
+      update: async (args: unknown) => {
+        updates.push(args);
+        return { ok: true };
+      },
+      send: async () => { throw new Error("set_thread_model must not send a message"); },
+    },
+    providers: {
+      models: async () => ({
+        modelLoadError: null,
+        models: [
+          { id: "anthropic/claude-fable-5", model: "anthropic/claude-fable-5", displayName: "Claude Fable 5" },
+          { id: "anthropic/claude-fable-5-1", model: "anthropic/claude-fable-5-1", displayName: "Claude Fable 5.1" },
+        ],
+        selectedOnlyModels: [],
+      }),
+    },
+  } as any });
+  try {
+    await plugin(bb);
+    const result = await harness.behavior.callRpc("runTool", {
+      name: "set_thread_model",
+      args: { thread_id: "target-thread", model: "anthropic:claude-5-fable" },
+      threadId: "source-thread",
+      projectId: "project",
+    }) as any;
+    assert.equal(result.status, "success");
+    assert.deepEqual(JSON.parse(result.output), {
+      threadId: "target-thread",
+      providerId: "pi",
+      model: "anthropic/claude-fable-5",
+      applies: "next turn",
+      messageSent: false,
+    });
+    assert.deepEqual(updates, [{ threadId: "target-thread", model: "anthropic/claude-fable-5" }]);
+
+    const blockedMessage = await harness.behavior.callRpc("runTool", {
+      name: "send_to_thread",
+      args: {
+        thread_id: "target-thread",
+        message: "Switch the model to gpt-5.6-sol for future runs. Keep the provider as pi.",
+      },
+      threadId: "source-thread",
+      projectId: "project",
+    }) as any;
+    assert.equal(blockedMessage.status, "error");
+    assert.match(blockedMessage.output, /Thread configuration was not sent as a message/);
+    assert.equal(harness.inspection.sdk.callsTo("threads.send").length, 0);
+  } finally { await harness.lifecycle.dispose(); }
+});
+
+/** start_thread resolves the target project first, so every start_thread test
+ * stubs projects.list with one standard project ("project") on host-1. */
+const fakeProjectsSdk = {
+  list: async () => [{
+    id: "project",
+    name: "Project",
+    kind: "standard" as const,
+    gitRemoteUrl: null,
+    sources: [{ id: "source-1", projectId: "project", hostId: "host-1", path: "/tmp/project", type: "local_path" as const, isDefault: true, createdAt: 0, updatedAt: 0 }],
+    createdAt: 0,
+    updatedAt: 0,
+  }],
+};
+
+test("start_thread preserves project provider and model defaults when no override was requested", async () => {
+  let spawned: Record<string, unknown> | null = null;
+  const { bb, harness } = createFakePluginHost({ pluginId: "handsfree", sdk: {
+    projects: fakeProjectsSdk,
+    threads: {
+      spawn: async (args: unknown) => {
+        spawned = args as Record<string, unknown>;
+        return makeThreadResponse({ id: "default-thread", projectId: "project", providerId: "codex" });
+      },
+      open: async () => ({ delivered: 1 }),
+    },
+  } as any });
+  try {
+    await plugin(bb);
+    const result = await harness.behavior.callRpc("runTool", {
+      name: "start_thread", args: { prompt: "Fix the test" }, threadId: null, projectId: "project",
+    }) as any;
+    assert.equal(result.status, "success");
+    assert.ok(spawned);
+    assert.equal("providerId" in spawned, false);
+    assert.equal("model" in spawned, false);
+    assert.equal("executionInputSources" in spawned, false);
+    assert.equal(harness.inspection.sdk.callsTo("providers.list").length, 0);
+    assert.equal(harness.inspection.sdk.callsTo("providers.models").length, 0);
+  } finally { await harness.lifecycle.dispose(); }
+});
+
+test("start_thread resolves spoken provider and model names and marks both overrides explicit", async () => {
+  const captured: { spawned?: Record<string, unknown> } = {};
+  const { bb, harness } = createFakePluginHost({ pluginId: "handsfree", sdk: {
+    projects: fakeProjectsSdk,
+    providers: {
+      list: async () => [{ id: "pi", displayName: "Pi", available: true }],
+      models: async () => ({
+        modelLoadError: null,
+        models: [{ id: "openai-codex/gpt-5.6-sol", model: "openai-codex/gpt-5.6-sol", displayName: "GPT-5.6 Sol" }],
+        selectedOnlyModels: [],
+      }),
+    },
+    threads: {
+      spawn: async (args: unknown) => {
+        captured.spawned = args as Record<string, unknown>;
+        return makeThreadResponse({ id: "pi-thread", projectId: "project", providerId: "pi" });
+      },
+      open: async () => ({ delivered: 1 }),
+    },
+  } as any });
+  try {
+    await plugin(bb);
+    const result = await harness.behavior.callRpc("runTool", {
+      name: "start_thread",
+      args: {
+        prompt: "Fix the test",
+        machine_id: "host-1",
+        provider_id: "Pi",
+        model: "gpt-5.6-sol",
+      },
+      threadId: null,
+      projectId: "project",
+    }) as any;
+    assert.equal(result.status, "success");
+    assert.ok(captured.spawned);
+    assert.equal(captured.spawned.providerId, "pi");
+    assert.equal(captured.spawned.model, "openai-codex/gpt-5.6-sol");
+    assert.deepEqual(captured.spawned.executionInputSources, { providerId: "explicit", model: "explicit" });
+  } finally { await harness.lifecycle.dispose(); }
+});
+
+test("start_thread searches the model catalog without changing the requested Fable version", async () => {
+  const spawnedModels: unknown[] = [];
+  const { bb, harness } = createFakePluginHost({ pluginId: "handsfree", sdk: {
+    projects: fakeProjectsSdk,
+    providers: {
+      list: async () => [{ id: "pi", displayName: "Pi", available: true }],
+      models: async () => ({
+        modelLoadError: null,
+        models: [
+          { id: "anthropic/claude-fable-5", model: "anthropic/claude-fable-5", displayName: "Claude Fable 5" },
+          { id: "anthropic/claude-fable-5-1", model: "anthropic/claude-fable-5-1", displayName: "Claude Fable 5.1" },
+          { id: "anthropic/claude-opus-5", model: "anthropic/claude-opus-5", displayName: "Claude Opus 5" },
+        ],
+        selectedOnlyModels: [],
+      }),
+    },
+    threads: {
+      spawn: async (args: { model?: unknown }) => {
+        spawnedModels.push(args.model);
+        return makeThreadResponse({ id: `fable-${spawnedModels.length}`, projectId: "project", providerId: "pi" });
+      },
+      open: async () => ({ delivered: 1 }),
+    },
+  } as any });
+  try {
+    await plugin(bb);
+    for (const model of ["anthropic:claude-5-fable", "fabel-5", "fable-5.1"]) {
+      const result = await harness.behavior.callRpc("runTool", {
+        name: "start_thread",
+        args: { prompt: "Check the repository", machine_id: "host-1", provider_id: "pi", model },
+        threadId: null,
+        projectId: "project",
+      }) as any;
+      assert.equal(result.status, "success", `${model}: ${result.output}`);
+    }
+    assert.deepEqual(spawnedModels, [
+      "anthropic/claude-fable-5",
+      "anthropic/claude-fable-5",
+      "anthropic/claude-fable-5-1",
+    ]);
+
+    const ambiguous = await harness.behavior.callRpc("runTool", {
+      name: "start_thread",
+      args: { prompt: "Check the repository", machine_id: "host-1", provider_id: "pi", model: "fable" },
+      threadId: null,
+      projectId: "project",
+    }) as any;
+    assert.equal(ambiguous.status, "error");
+    assert.match(ambiguous.output, /not available/);
+  } finally { await harness.lifecycle.dispose(); }
+});
+
+test("start_thread rejects a model that is unavailable for the requested provider", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "handsfree", sdk: {
+    projects: fakeProjectsSdk,
+    providers: {
+      list: async () => [{ id: "pi", displayName: "Pi", available: true }],
+      models: async () => ({ modelLoadError: null, models: [], selectedOnlyModels: [] }),
+    },
+  } as any });
+  try {
+    await plugin(bb);
+    const result = await harness.behavior.callRpc("runTool", {
+      name: "start_thread",
+      args: { prompt: "Fix the test", machine_id: "host-1", provider_id: "pi", model: "missing-model" },
+      threadId: null,
+      projectId: "project",
+    }) as any;
+    assert.equal(result.status, "error");
+    assert.match(result.output, /not available for provider "pi"/);
+    assert.equal(harness.inspection.sdk.callsTo("threads.spawn").length, 0);
+  } finally { await harness.lifecycle.dispose(); }
 });
 
 test("mobile settings never replace desktop navigation and migrate the prototype preference", async () => {
