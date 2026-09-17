@@ -194,6 +194,23 @@ test("gpt-live-1 sessions post to the Live API with delegation and report live: 
       sdp: "offer", threadId: null, projectId: null, onNewThreadScreen: false, nonce: "call-rt",
     }) as { sdp: string; live: boolean };
     assert.deepEqual(realtime, { sdp: "answer-realtime", live: false });
+
+    // The realtime call above ran under "auto" and used the env API key; that
+    // mechanism is remembered across a gpt-live-1 detour and restored as the
+    // explicit realtime default on the way back.
+    await harness.behavior.callRpc("setConfig", { model: "gpt-live-1" });
+    const restored = await harness.behavior.callRpc("setConfig", { model: "gpt-realtime-2.1-mini" }) as any;
+    assert.equal(restored.credentialPreference, "apiKey");
+    // An explicit choice made in the same switch beats the memory — and
+    // becomes the new remembered default.
+    await harness.behavior.callRpc("setConfig", { model: "gpt-live-1" });
+    const explicit = await harness.behavior.callRpc("setConfig", {
+      model: "gpt-realtime-2.1", credentialPreference: "subscription",
+    }) as any;
+    assert.equal(explicit.credentialPreference, "subscription");
+    await harness.behavior.callRpc("setConfig", { model: "gpt-live-1" });
+    const rememberedExplicit = await harness.behavior.callRpc("setConfig", { model: "gpt-realtime-2.1" }) as any;
+    assert.equal(rememberedExplicit.credentialPreference, "subscription");
   } finally {
     globalThis.fetch = originalFetch;
     if (savedEnv === undefined) delete process.env.OPENAI_API_KEY;

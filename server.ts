@@ -775,7 +775,11 @@ export default async function plugin(bb: BbPluginApi) {
     }
   }
 
-  async function apiKey(options?: { requireKey?: boolean }): Promise<string> {
+  /** Which auth mechanism a resolved credential is, for the realtime-auth memory. */
+  type AuthMechanism = "apiKey" | "subscription";
+  const LAST_REALTIME_AUTH_KEY = "lastRealtimeAuth";
+
+  async function apiKey(options?: { requireKey?: boolean }): Promise<{ key: string; mechanism: AuthMechanism }> {
     const { openaiApiKey } = await settings.get();
     const { credentialPreference } = await readConfig();
     const key = openaiApiKey || process.env.OPENAI_API_KEY;
@@ -783,7 +787,7 @@ export default async function plugin(bb: BbPluginApi) {
     // denied"), so live sessions must use a real API key regardless of the
     // user's credential preference.
     if (options?.requireKey) {
-      if (key) return key;
+      if (key) return { key, mechanism: "apiKey" };
       throw new Error(
         "gpt-live-1 needs an OpenAI API key — the Live API does not accept ChatGPT-subscription sign-in. Add a key in Handsfree settings, or pick a gpt-realtime model.",
       );
@@ -792,12 +796,12 @@ export default async function plugin(bb: BbPluginApi) {
     // a key. Otherwise (auto / apiKey) a key wins, then the subscription.
     if (credentialPreference === "subscription") {
       const codex = await codexToken();
-      if (codex) return codex;
-      if (key) return key;
+      if (codex) return { key: codex, mechanism: "subscription" };
+      if (key) return { key, mechanism: "apiKey" };
     } else {
-      if (key) return key;
+      if (key) return { key, mechanism: "apiKey" };
       const codex = await codexToken();
-      if (codex) return codex;
+      if (codex) return { key: codex, mechanism: "subscription" };
     }
     throw new Error(
       "No OpenAI credentials. Set an API key in the Handsfree settings, or sign in with `codex login` to use your ChatGPT subscription.",
@@ -1294,7 +1298,7 @@ export default async function plugin(bb: BbPluginApi) {
   bb.rpc.register(rpcContract, {
     async createCall({ sdp, threadId, projectId, onNewThreadScreen, nonce, mobile = false }) {
       const { model, voice } = await readConfig();
-      const key = await apiKey({ requireKey: isLiveModel(model) });
+      const { key, mechanism } = await apiKey({ requireKey: isLiveModel(model) });
       const pluginCommands = await exposedPluginCommands();
       const pluginSection =
         pluginCommands.length === 0
@@ -1387,6 +1391,9 @@ export default async function plugin(bb: BbPluginApi) {
       }
       // One voice session at a time, everywhere: every connected client hears
       // this and stops any session whose nonce differs.
+      // Remember which auth mechanism the realtime family actually used, so
+      // moving to gpt-live-1 (key-forced) and back restores this default.
+      void bb.storage.kv.set(LAST_REALTIME_AUTH_KEY, mechanism).catch(() => undefined);
       bb.realtime.publish("voice-call", { nonce });
       return { sdp: text, live: false };
     },
@@ -1416,6 +1423,25 @@ export default async function plugin(bb: BbPluginApi) {
       return await readConfig();
     },
     async setConfig(patch) {
+      if (patch.credentialPreference !== undefined) {
+        // An explicit auth choice always wins and becomes the remembered
+        // realtime default (auto clears the memory — follow precedence again).
+        await bb.storage.kv.set(
+          LAST_REALTIME_AUTH_KEY,
+          patch.credentialPreference === "auto" ? null : patch.credentialPreference,
+        );
+      } else if (patch.model && !isLiveModel(patch.model)) {
+        // Moving back from gpt-live-1 (which forces the API key) to a realtime
+        // model: restore the auth mechanism realtime last used, unless this
+        // very patch changes it explicitly (handled above).
+        const current = await readConfig();
+        if (isLiveModel(current.model)) {
+          const remembered = await bb.storage.kv.get<string>(LAST_REALTIME_AUTH_KEY);
+          if (remembered === "apiKey" || remembered === "subscription") {
+            patch = { ...patch, credentialPreference: remembered };
+          }
+        }
+      }
       const next = await writeConfig(patch);
       bb.log.info(`voice config updated: ${JSON.stringify(patch)}`);
       // Every open window refetches, so the settings sections and the nav-panel
@@ -1471,9 +1497,13 @@ export default async function plugin(bb: BbPluginApi) {
       const envKeyPresent = !!process.env.OPENAI_API_KEY;
       const subscriptionAvailable = !!(await codexToken());
       const keySource = hasApiKey ? ("apiKey" as const) : envKeyPresent ? ("env" as const) : null;
-      // Mirror apiKey() so the badge shows what a session will actually use.
-      const effective =
-        preference === "subscription"
+      // Mirror apiKey() so the badge shows what a session will actually use —
+      // including that a live model always takes the key, whatever the
+      // preference says.
+      const { model } = await readConfig();
+      const effective = isLiveModel(model)
+        ? (keySource ?? ("none" as const))
+        : preference === "subscription"
           ? subscriptionAvailable
             ? ("subscription" as const)
             : (keySource ?? ("none" as const))
