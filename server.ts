@@ -405,6 +405,11 @@ function truncate(text: string, max = 4000): string {
   return text.length > max ? `${text.slice(0, max)}\n…[truncated]` : text;
 }
 
+/** Refuse accidental agent messages that are plainly thread configuration. */
+function isThreadConfigurationMessage(message: string): boolean {
+  return /\b(?:for (?:future|next) (?:runs?|turns?)|keep the (?:provider|harness)|(?:switch|change|set) the (?:provider|harness|model|reasoning(?: level)?)(?:\s+to)?\b)/i.test(message);
+}
+
 /** Compact a completed turn's result for a grounded voice notification. */
 function notificationDetail(detail: string | null, max = 600): string | null {
   const normalized = detail?.replace(/\s+/g, " ").trim();
@@ -446,6 +451,7 @@ export function toolSchemas(pluginCommands: PluginCommandInfo[] = [], mobile = f
     { type: "function", name: "get_context", description: "Get the user's current bb context: the thread and project currently in view, including the thread's status and latest assistant output." },
     { type: "function", name: "list_projects", description: "List bb projects with their ids and names." },
     { type: "function", name: "list_machines", description: "List the machines (hosts) bb can run threads on: id, name, connection status — and, for a project, which machines hold it and which is its default. Use before start_thread when the machine matters.", parameters: { type: "object", properties: { project_id: { type: "string", description: "Marks which machines hold this project and which is its default. Defaults to the user's current project." } } } },
+    { type: "function", name: "list_providers", description: "List the available bb agent harnesses/providers for the current thread environment or target project machine. Pass provider_id to list that provider's exact model ids. Use this when the user asks what harnesses or models are available.", parameters: { type: "object", properties: { project_id: { type: "string", description: "Project whose default machine should be checked. Defaults to the user's current project." }, machine_id: { type: "string", description: "Machine id to check instead of the current environment or project default." }, provider_id: { type: "string", description: "Provider id or name whose models should be listed, such as pi, codex, or claude-code." } } } },
     { type: "function", name: "list_live_threads", description: "List the threads in the Live threads sidebar section: running right now (active/starting/provisioning/waiting), plus threads that finished within the last 30 minutes (status 'recently-finished'). Only threads without a 'recently-finished' status are still working." },
     { type: "function", name: "list_threads", description: "List recent bb threads (id, title, status). Optionally filter by project id.", parameters: { type: "object", properties: { project_id: { type: "string" }, limit: { type: "number", description: "Max threads to return (default 15)." } } } },
     { type: "function", name: "search_threads", description: "Full-text search bb threads by title/content. Returns matching thread ids and titles.", parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"] } },
@@ -456,8 +462,9 @@ export function toolSchemas(pluginCommands: PluginCommandInfo[] = [], mobile = f
     { type: "function", name: "manage_views", description: "List, select, or close the views in the mobile drawer. Get view IDs using list. clear closes all views only when the user asks. Closing a view does not stop its thread or the call.", parameters: { type: "object", properties: { action: { type: "string", enum: ["list", "select", "close", "clear"] }, view_id: { type: "string" } }, required: ["action"] } },
     { type: "function", name: "set_view_behavior", description: "Save how future mobile drawer opens behave. Use only when the user asks for a lasting mobile preference: reuse replaces the active view; new keeps views in the switcher. Desktop always navigates normally. Explicit mobile requests and batches override this preference.", parameters: { type: "object", properties: { behavior: { type: "string", enum: ["reuse", "new"] } }, required: ["behavior"] } },
     { type: "function", name: "set_pane", description: "Change a thread pane's presentation in the bb app: spotlight, clear-spotlight, maximize, restore, or toggle.", parameters: { type: "object", properties: { thread_id: { type: "string" }, action: { type: "string", enum: ["spotlight", "clear-spotlight", "maximize", "restore", "toggle"] } }, required: ["thread_id", "action"] } },
-    { type: "function", name: "send_to_thread", description: "Send a message to a thread's agent. Starts a turn if idle, queues/steers if running.", parameters: { type: "object", properties: { thread_id: { type: "string" }, message: { type: "string" } }, required: ["thread_id", "message"] } },
-    { type: "function", name: "start_thread", description: "Start a new agent thread. Only pass prompt when the user dictated actual work; With no prompt, this opens bb's New thread screen for the user to type their own. Runs on the project's default machine unless machine_id is given — if the project lives on several connected machines and the user didn't say which, check list_machines and ask one short question instead of guessing. Threads can also run outside any project: pass the personal project's id from list_projects (or omit project_id when there is no current project) and the thread lands in the Personal section, no machine choice needed.", parameters: { type: "object", properties: { project_id: { type: "string", description: "Project id; defaults to the user's current project, or to the personal project when there is none." }, prompt: { type: "string", description: "The user's own instruction for the agent, verbatim. Omit if they didn't give one." }, title: { type: "string" }, machine_id: { type: "string", description: "Machine (host) id to run on, from list_machines. Omit to use the project's default machine." } } } },
+    { type: "function", name: "send_to_thread", description: "Send a work instruction or follow-up message to a thread's agent. Starts a turn if idle, queues/steers if running. Never use this for provider, model, reasoning, or other thread configuration changes; use the matching configuration tool instead.", parameters: { type: "object", properties: { thread_id: { type: "string" }, message: { type: "string" } }, required: ["thread_id", "message"] } },
+    { type: "function", name: "set_thread_model", description: "Change an existing thread's sticky model for its next and later turns without sending the agent a message or starting a turn. The thread keeps its current harness/provider. The backend searches that provider's model catalog for the user's wording.", parameters: { type: "object", properties: { thread_id: { type: "string" }, model: { type: "string", description: "The user's requested model wording or exact model id." } }, required: ["thread_id", "model"] } },
+    { type: "function", name: "start_thread", description: "Start a new agent thread. Only pass prompt when the user dictated actual work; With no prompt, this opens bb's New thread screen for the user to type their own. Omit provider_id and model to use the project's defaults. Set them only when the user explicitly requests a harness/provider or model. Runs on the project's default machine unless machine_id is given — if the project lives on several connected machines and the user didn't say which, check list_machines and ask one short question instead of guessing. Threads can also run outside any project: pass the personal project's id from list_projects (or omit project_id when there is no current project) and the thread lands in the Personal section, no machine choice needed.", parameters: { type: "object", properties: { project_id: { type: "string", description: "Project id; defaults to the user's current project, or to the personal project when there is none." }, prompt: { type: "string", description: "The user's own instruction for the agent, verbatim. Omit if they didn't give one." }, title: { type: "string" }, machine_id: { type: "string", description: "Machine (host) id from list_machines, or the machine's name as the user said it. Omit to use the project's default machine." }, provider_id: { type: "string", description: "Requested bb agent harness/provider id, such as pi, codex, or claude-code. Set only when the user explicitly asks; otherwise omit for project defaults." }, model: { type: "string", description: "The user's requested model wording. The backend searches the selected provider's catalog, so pass the name as heard instead of inventing or rearranging an exact id. Exact ids and unambiguous short names also work. Set only when the user explicitly asks; otherwise omit for project defaults." } } } },
     { type: "function", name: "stop_thread", description: "Stop a running thread.", parameters: { type: "object", properties: { thread_id: { type: "string" } }, required: ["thread_id"] } },
     { type: "function", name: "archive_thread", description: "Archive a thread (and its children).", parameters: { type: "object", properties: { thread_id: { type: "string" } }, required: ["thread_id"] } },
     { type: "function", name: "rename_thread", description: "Rename a thread.", parameters: { type: "object", properties: { thread_id: { type: "string" }, title: { type: "string" } }, required: ["thread_id", "title"] } },
@@ -488,7 +495,11 @@ Rules:
 - Prefer focus_thread so the user sees what you are talking about.
 - While a voice session is active, bb sends you updates when visible threads finish or fail (when Announcements is enabled). You can notify the user: if they ask to be told when a thread finishes, say yes, then announce the update in one short sentence when it arrives. Always name the thread by its title in that sentence; several threads may be running, so a bare "it finished" is ambiguous. Never claim that you cannot notify them, and do not poll the thread.
 - When read_thread returns lastOutcome, report that outcome plainly instead of guessing why output is missing. When a thread has status error and read_thread still does not explain why, call get_thread_error with that thread id before answering. Never say no details are available without checking.
-- Threads run on a machine. start_thread uses the project's default machine unless you pass machine_id — when the project is on several connected machines and the user didn't name one, use list_machines and ask one short question (e.g. "On your MacBook or the studio?") before starting. The personal project ("no project") is the exception: it needs no machine or git checkout — just start the thread and it appears in the Personal section.
+- Threads run on a machine. start_thread uses the project's default machine unless you pass machine_id — when the project is on several connected machines and the user didn't name one, use list_machines and ask one short question (e.g. "On your MacBook or the studio?") before starting. The personal project ("no project") needs no git checkout and no machine choice — but it CAN run on any connected machine: pass machine_id when the user names one, omit it for the default. Never claim a personal thread needs a project to run on a specific machine.
+- Use list_providers when the user asks which agent harnesses or models are available. Pass provider_id when they want the models for one harness.
+- Never invent or rearrange a model id. Pass the user's model wording to start_thread or set_thread_model, which searches the selected provider's catalog for one matching model. If the request is still ambiguous, use list_providers with provider_id before asking the user.
+- A request to change an existing thread's model is configuration: use set_thread_model. Never send a model change to the thread as a message, because that starts an agent turn without changing the model.
+- start_thread uses the project's provider and model defaults when provider_id and model are omitted. Set only the fields the user explicitly requested. For example, "use Pi with GPT-5.6 Sol" means provider_id "pi" and model "GPT-5.6 Sol"; do not change either setting on your own.
 - When the user asks you to permanently behave differently ("always …", "from now on …"), use update_instructions to amend these standing instructions.`;
 
 export default async function plugin(bb: BbPluginApi) {
@@ -890,6 +901,206 @@ export default async function plugin(bb: BbPluginApi) {
     return (thread as { environmentId?: string | null }).environmentId ?? null;
   }
 
+  const normalizedExecutionName = (value: string) => value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "");
+  const shortExecutionName = (value: string) => value.trim().toLowerCase().split("/").at(-1) ?? "";
+  const executionNameTokens = (value: string) => value.toLowerCase().match(/[a-z]+|\d+/g) ?? [];
+
+  function editDistance(left: string, right: string): number {
+    const row = Array.from({ length: right.length + 1 }, (_, index) => index);
+    for (let leftIndex = 1; leftIndex <= left.length; leftIndex += 1) {
+      let diagonal = row[0];
+      row[0] = leftIndex;
+      for (let rightIndex = 1; rightIndex <= right.length; rightIndex += 1) {
+        const above = row[rightIndex];
+        row[rightIndex] = Math.min(
+          row[rightIndex] + 1,
+          row[rightIndex - 1] + 1,
+          diagonal + (left[leftIndex - 1] === right[rightIndex - 1] ? 0 : 1),
+        );
+        diagonal = above;
+      }
+    }
+    return row[right.length];
+  }
+
+  /** Score a spoken/model-generated alias against one catalog name. */
+  function modelNameScore(requested: string, candidate: string): number {
+    const requestedTokens = executionNameTokens(requested);
+    const candidateTokens = executionNameTokens(candidate);
+    if (!requestedTokens.length || !candidateTokens.length) return Number.NEGATIVE_INFINITY;
+    if (
+      requestedTokens.length === candidateTokens.length &&
+      [...requestedTokens].sort().every((token, index) => token === [...candidateTokens].sort()[index])
+    ) return 1000;
+
+    const remaining = [...candidateTokens];
+    let score = 0;
+    let missing = 0;
+    for (const token of requestedTokens) {
+      const exact = remaining.indexOf(token);
+      if (exact >= 0) {
+        remaining.splice(exact, 1);
+        score += 10;
+        continue;
+      }
+      if (/^[a-z]{4,}$/.test(token)) {
+        let fuzzyIndex = -1;
+        let closest = 3;
+        for (let index = 0; index < remaining.length; index += 1) {
+          if (!/^[a-z]{4,}$/.test(remaining[index])) continue;
+          const distance = editDistance(token, remaining[index]);
+          if (distance < closest) {
+            closest = distance;
+            fuzzyIndex = index;
+          }
+        }
+        if (fuzzyIndex >= 0 && closest <= 2) {
+          remaining.splice(fuzzyIndex, 1);
+          score += 8 - closest;
+          continue;
+        }
+      }
+      missing += 1;
+    }
+    return score - missing * 12 - remaining.length * 2;
+  }
+
+  function requestedModelMatches<T extends { id: string; model: string; displayName: string }>(
+    models: T[],
+    requestedModel: string,
+  ): T[] {
+    const lower = requestedModel.trim().toLowerCase();
+    const normalized = normalizedExecutionName(requestedModel);
+    const exact = models.filter((candidate) => {
+      const names = [candidate.id, candidate.model, candidate.displayName];
+      return names.some((name) => name.toLowerCase() === lower) ||
+        names.some((name) => shortExecutionName(name) === lower) ||
+        names.some((name) => normalizedExecutionName(name) === normalized) ||
+        names.some((name) => normalizedExecutionName(shortExecutionName(name)) === normalized);
+    });
+    if (exact.length > 0) return exact;
+
+    const ranked = models
+      .map((candidate) => ({
+        candidate,
+        score: Math.max(
+          modelNameScore(requestedModel, candidate.id),
+          modelNameScore(requestedModel, candidate.model),
+          modelNameScore(requestedModel, candidate.displayName),
+        ),
+      }))
+      .sort((left, right) => right.score - left.score);
+    const best = ranked[0]?.score ?? Number.NEGATIVE_INFINITY;
+    if (best < 10) return [];
+    return ranked.filter((entry) => entry.score === best).map((entry) => entry.candidate);
+  }
+
+  function requestedProviderMatch<T extends { id: string; displayName: string; available: boolean }>(
+    providers: T[],
+    requestedProvider: string,
+  ): T {
+    const lower = requestedProvider.trim().toLowerCase();
+    const normalized = normalizedExecutionName(requestedProvider);
+    const matches = providers.filter(
+      (provider) =>
+        provider.id.toLowerCase() === lower ||
+        provider.displayName.toLowerCase() === lower ||
+        normalizedExecutionName(provider.id) === normalized ||
+        normalizedExecutionName(provider.displayName) === normalized,
+    );
+    if (matches.length !== 1) {
+      const available = providers.filter((provider) => provider.available).map((provider) => provider.id).slice(0, 12);
+      throw new Error(
+        matches.length > 1
+          ? `Provider "${requestedProvider}" is ambiguous. Use one of: ${matches.map((provider) => provider.id).join(", ")}.`
+          : `Provider "${requestedProvider}" is not available. Available providers: ${available.join(", ") || "none"}.`,
+      );
+    }
+    if (!matches[0].available) throw new Error(`Provider "${matches[0].id}" is not available on the selected machine.`);
+    return matches[0];
+  }
+
+  type ProviderRouting =
+    | { environmentId: string; hostId?: never }
+    | { environmentId?: never; hostId: string }
+    | { environmentId?: never; hostId?: never };
+
+  async function projectProviderRouting(
+    projectId: string | null,
+    machineId: string | null,
+  ): Promise<ProviderRouting> {
+    if (machineId) return { hostId: machineId };
+    if (!projectId) return {};
+    const projects = await bb.sdk.projects.list({ includePersonal: true });
+    const project = projects.find((candidate) => candidate.id === projectId);
+    const hostId = project?.sources.find((source) => source.isDefault)?.hostId ?? project?.sources[0]?.hostId;
+    return hostId ? { hostId } : {};
+  }
+
+  async function resolveRequestedModel(
+    providerId: string,
+    routing: ProviderRouting,
+    requestedModel: string,
+  ): Promise<string> {
+    const options = await bb.sdk.providers.models({ ...routing, providerId });
+    if (options.modelLoadError) {
+      throw new Error(`Could not load models for provider "${providerId}" (${options.modelLoadError.code}).`);
+    }
+    const allModels = [...options.models, ...options.selectedOnlyModels];
+    const uniqueModels = [...new Map(allModels.map((candidate) => [candidate.id, candidate])).values()];
+    const matches = requestedModelMatches(uniqueModels, requestedModel);
+    if (matches.length !== 1) {
+      const available = uniqueModels.slice(0, 12).map((candidate) => candidate.id);
+      throw new Error(
+        matches.length > 1
+          ? `Model "${requestedModel}" is ambiguous for provider "${providerId}". Use one of: ${matches.map((candidate) => candidate.id).join(", ")}.`
+          : `Model "${requestedModel}" is not available for provider "${providerId}". Available models: ${available.join(", ") || "none"}.`,
+      );
+    }
+    return matches[0].model;
+  }
+
+  /**
+   * Resolve user-spoken provider and model names against the target machine.
+   * We keep the fields absent when the user did not request them, which lets bb
+   * apply the project's remembered defaults without the plugin overriding them.
+   */
+  async function resolveRequestedExecution(
+    projectId: string,
+    machineId: string | null,
+    requestedProvider: string | null,
+    requestedModel: string | null,
+  ): Promise<{ providerId?: string; model?: string; executionInputSources?: { providerId?: "explicit"; model?: "explicit" } }> {
+    if (!requestedProvider && !requestedModel) return {};
+
+    const routing = await projectProviderRouting(projectId, machineId);
+    const providers = await bb.sdk.providers.list(routing);
+
+    let providerForCatalog: string;
+    let explicitProviderId: string | undefined;
+    if (requestedProvider) {
+      const provider = requestedProviderMatch(providers, requestedProvider);
+      providerForCatalog = provider.id;
+      explicitProviderId = provider.id;
+    } else {
+      const defaults = await bb.sdk.projects.defaultExecutionOptions({ projectId });
+      providerForCatalog = defaults?.providerId ?? "codex";
+    }
+
+    const model = requestedModel
+      ? await resolveRequestedModel(providerForCatalog, routing, requestedModel)
+      : undefined;
+
+    return {
+      ...(explicitProviderId ? { providerId: explicitProviderId } : {}),
+      ...(model ? { model } : {}),
+      executionInputSources: {
+        ...(explicitProviderId ? { providerId: "explicit" as const } : {}),
+        ...(model ? { model: "explicit" as const } : {}),
+      },
+    };
+  }
+
   function describeThread(thread: unknown): Record<string, unknown> {
     const t = thread as Record<string, unknown>;
     return {
@@ -999,6 +1210,55 @@ export default async function plugin(bb: BbPluginApi) {
           })),
         );
       }
+      case "list_providers": {
+        const projectId =
+          typeof args.project_id === "string" && args.project_id ? args.project_id : context.projectId;
+        const machineId =
+          typeof args.machine_id === "string" && args.machine_id ? args.machine_id : null;
+        let routing: ProviderRouting;
+        // With no explicit target, the current thread environment is more exact
+        // than the project's default host, especially for workspace-scoped Pi models.
+        if (!machineId && !args.project_id && context.threadId) {
+          const environmentId = await resolveEnvironmentId(context.threadId);
+          routing = environmentId
+            ? { environmentId }
+            : await projectProviderRouting(projectId, null);
+        } else {
+          routing = await projectProviderRouting(projectId, machineId);
+        }
+        const providers = await bb.sdk.providers.list(routing);
+        const requestedProvider =
+          typeof args.provider_id === "string" && args.provider_id.trim() ? args.provider_id.trim() : null;
+        if (!requestedProvider) {
+          return JSON.stringify({
+            providers: providers
+              .filter((provider) => provider.available)
+              .map((provider) => ({
+                id: provider.id,
+                name: provider.displayName,
+                modelCatalogScope: provider.capabilities.modelCatalogScope,
+              })),
+          });
+        }
+        const provider = requestedProviderMatch(providers, requestedProvider);
+        const options = await bb.sdk.providers.models({ ...routing, providerId: provider.id });
+        if (options.modelLoadError) {
+          throw new Error(`Could not load models for provider "${provider.id}" (${options.modelLoadError.code}).`);
+        }
+        const allModels = [...options.models, ...options.selectedOnlyModels];
+        const models = [...new Map(allModels.map((candidate) => [candidate.id, candidate])).values()];
+        return JSON.stringify({
+          provider: { id: provider.id, name: provider.displayName },
+          models: models.slice(0, 100).map((candidate) => ({
+            id: candidate.id,
+            name: candidate.displayName,
+            isDefault: candidate.isDefault,
+            defaultReasoningLevel: candidate.defaultReasoningEffort,
+          })),
+          totalModels: models.length,
+          truncated: models.length > 100,
+        });
+      }
       case "list_live_threads": {
         const live = await withMachines(await liveThreads());
         return live.length === 0 ? "No live threads right now." : JSON.stringify(live);
@@ -1066,12 +1326,34 @@ export default async function plugin(bb: BbPluginApi) {
         return `Pane ${action} applied.`;
       }
       case "send_to_thread": {
+        const message = str("message");
+        if (isThreadConfigurationMessage(message)) {
+          throw new Error("Thread configuration was not sent as a message. Use set_thread_model for model changes.");
+        }
         await bb.sdk.threads.send({
           threadId: str("thread_id"),
           mode: "auto",
-          input: [{ type: "text", text: str("message"), mentions: [] }],
+          input: [{ type: "text", text: message, mentions: [] }],
         });
         return "Message sent.";
+      }
+      case "set_thread_model": {
+        const threadId = str("thread_id");
+        const requestedModel = str("model");
+        const thread = await bb.sdk.threads.get({ threadId });
+        if (!thread.providerId) throw new Error("This thread has no provider to select a model for.");
+        const routing: ProviderRouting = thread.environmentId
+          ? { environmentId: thread.environmentId }
+          : await projectProviderRouting(thread.projectId, null);
+        const model = await resolveRequestedModel(thread.providerId, routing, requestedModel);
+        await bb.sdk.threads.update({ threadId, model });
+        return JSON.stringify({
+          threadId,
+          providerId: thread.providerId,
+          model,
+          applies: "next turn",
+          messageSent: false,
+        });
       }
       case "start_thread": {
         const prompt = typeof args.prompt === "string" && args.prompt.trim() ? args.prompt : undefined;
@@ -1095,24 +1377,56 @@ export default async function plugin(bb: BbPluginApi) {
               : "No project selected and no personal project exists. Ask the user or call list_projects.",
           );
         }
+        // The voice model sometimes passes the machine's spoken name instead
+        // of a host id from list_machines; resolve either, and fail with the
+        // connected machine names rather than bb's bare HTTP 404.
+        let hostId: string | null = null;
+        let hostName: string | null = null;
+        if (machineId) {
+          const hosts = await bb.sdk.hosts.list();
+          const wanted = machineId.toLowerCase();
+          const host =
+            hosts.find((h) => h.id === machineId) ??
+            hosts.find((h) => h.name.toLowerCase() === wanted) ??
+            hosts.find((h) => h.name.toLowerCase().includes(wanted));
+          if (!host) {
+            throw new Error(
+              `No machine matches "${machineId}". Connected machines: ${hosts.map((h) => h.name).join(", ") || "none"}. Use list_machines for ids.`,
+            );
+          }
+          hostId = host.id;
+          hostName = host.name;
+        }
+        const requestedProvider =
+          typeof args.provider_id === "string" && args.provider_id.trim() ? args.provider_id.trim() : null;
+        const requestedModel =
+          typeof args.model === "string" && args.model.trim() ? args.model.trim() : null;
+        const execution = await resolveRequestedExecution(
+          project.id,
+          hostId,
+          requestedProvider,
+          requestedModel,
+        );
         type SpawnEnvironment = Parameters<typeof bb.sdk.threads.spawn>[0]["environment"];
         const spawn = (environment: SpawnEnvironment) =>
           bb.sdk.threads.spawn({
             projectId: project.id,
             environment,
             prompt,
+            ...execution,
             ...(typeof args.title === "string" && args.title ? { title: args.title } : {}),
           });
         let thread: Awaited<ReturnType<typeof spawn>>;
         if (project.kind === "personal") {
           // Personal threads must use a personal workspace (no git checkout);
-          // managed worktrees are rejected with HTTP 400.
+          // managed worktrees are rejected with HTTP 400. They can still run
+          // on any connected machine via hostId.
           thread = await spawn({
             type: "host",
-            ...(machineId ? { hostId: machineId } : {}),
+            ...(hostId ? { hostId } : {}),
             workspace: { type: "personal" },
           });
-        } else if (machineId) {
+        } else if (hostId) {
           // A named machine gets a fresh managed worktree from the default
           // branch there. Projects that aren't git repos can't have worktrees,
           // so fall back to working directly in the project's source directory
@@ -1120,15 +1434,15 @@ export default async function plugin(bb: BbPluginApi) {
           try {
             thread = await spawn({
               type: "host",
-              hostId: machineId,
+              hostId,
               workspace: { type: "managed-worktree", baseBranch: { kind: "default" } },
             });
           } catch (error) {
-            const source = project.sources.find((s) => s.hostId === machineId);
+            const source = project.sources.find((s) => s.hostId === hostId);
             if (!source) throw error;
             thread = await spawn({
               type: "host",
-              hostId: machineId,
+              hostId,
               workspace: { type: "unmanaged", path: source.path },
             });
           }
@@ -1144,6 +1458,9 @@ export default async function plugin(bb: BbPluginApi) {
           await bb.sdk.threads.open({ threadId: thread.id, file: null }).catch(() => undefined);
         }
         const started = (await withMachines([describeThread(thread)]))[0];
+        // Right after spawn the thread's environment may not be resolvable yet,
+        // so withMachines reports machine: null; use the host we spawned on.
+        if (hostName && !started.machine) started.machine = hostName;
         return JSON.stringify(
           shouldFocus
             ? { started }

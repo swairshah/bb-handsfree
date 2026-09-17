@@ -41,11 +41,14 @@ press the new combination.
 ## Things you can say
 
 - *"What's running right now?"* — lists your live threads
+- *"Which agent harnesses are available here?"* — lists providers for the current environment
+- *"Which models can Pi use?"* — lists Pi's exact model ids
 - *"Find the thread about the flaky login test and put it on screen"*
 - *"Spotlight that pane"* / *"maximize it"* / *"restore it"*
 - *"What did the agent say?"* — summarizes the latest output aloud
 - *"Tell it to also add tests for the error path"* — messages the thread's agent
 - *"Start a new thread in the replay project: fix the CI timeout"*
+- *"Use Pi with GPT-5.6 Sol and start a thread in replay to fix the CI timeout"*
 - *"Show me the diff for that thread"*
 - *"Stop that thread"* / *"archive it"* / *"rename it to 'CI fix'"*
 - *"Type a prompt for me: refactor the session store to…"* — writes into
@@ -53,9 +56,12 @@ press the new combination.
 - *"What automations do I have?"* — runs other installed plugins' `bb`
   commands (curate which with the `pluginCommands` setting)
 
-The agent always knows which thread and project you're looking at — even as
-you navigate mid-conversation — so "this thread" just works. If a project
-lives on several machines, it checks which and asks before starting work.
+The agent always knows which thread and project you're looking at, even as
+you navigate during a conversation, so "this thread" works. New threads use
+the project's provider and model defaults unless you name an override. Handsfree
+checks requested providers and models against the selected machine before it
+starts the thread. If a project lives on several machines, it checks which one
+you want before starting work.
 
 A voice session is shared across all your bb windows and devices: the sidebar
 shows a live voice bar (with which device the session came through), and any
@@ -171,9 +177,10 @@ Tool-call flow: model → data channel → `app.tsx` → plugin RPC `runTool` �
 `bb.sdk` → output back over the data channel (function_call_output +
 response.create).
 
-Voice tools: `get_context`, `list_projects`, `list_machines`,
+Voice tools: `get_context`, `list_projects`, `list_machines`, `list_providers`,
 `list_live_threads`, `list_threads`, `search_threads`, `read_thread`,
-`get_thread_error`, `focus_thread`, `set_pane`, `send_to_thread`, `start_thread`, `stop_thread`,
+`get_thread_error`, `focus_thread`, `set_pane`, `send_to_thread`, `set_thread_model`,
+`start_thread`, `stop_thread`,
 `archive_thread`, `rename_thread`, `show_diff`, `update_instructions`,
 `run_plugin_cli`, plus frontend-local `set_composer_text` /
 `append_composer_text`.

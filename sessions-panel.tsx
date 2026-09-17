@@ -225,6 +225,7 @@ const ACTIONS: Record<string, { family: ActionFamily; verb: string }> = {
   set_pane: { family: "navigate", verb: "Changed the layout" },
   show_diff: { family: "navigate", verb: "Opened a diff" },
   send_to_thread: { family: "mutate", verb: "Sent a message" },
+  set_thread_model: { family: "mutate", verb: "Changed a thread model" },
   start_thread: { family: "mutate", verb: "Started a thread" },
   stop_thread: { family: "mutate", verb: "Stopped a thread" },
   archive_thread: { family: "mutate", verb: "Archived a thread" },
