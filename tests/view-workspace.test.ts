@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { ViewWorkspace, type ThreadView } from "./view-workspace.ts";
+import { ViewWorkspace, type ThreadView } from "../shared/view-workspace.ts";
 
 const view = (id: string): ThreadView => ({ kind: "thread", id: `thread:${id}`, threadId: id, projectId: `project-${id}`, title: `Thread ${id}` });
 function workspace() {

@@ -3,10 +3,10 @@
 import React, { Component, useEffect, useRef, useSyncExternalStore, type ReactNode } from "react";
 import { ThreadChat } from "@get-bb/plugin-sdk/app";
 import type { ExperimentalPluginFixedTabReference } from "@get-bb/plugin-sdk/app";
-import { viewWorkspace } from "./view-workspace";
-import { voiceAgent } from "./voice-agent";
+import { viewWorkspace } from "../shared/view-workspace";
+import { voiceAgent } from "../voice/agent";
 import { LiveCallControls } from "./voice-chrome";
-import { useDrawerViewport } from "./hooks/useDrawerViewport";
+import { useDrawerViewport } from "../hooks/useDrawerViewport";
 
 export const COMPANION_TAB: ExperimentalPluginFixedTabReference = { panelId: "sessions", id: "companion" };
 export const THREAD_WORKSPACE_ACTION = "thread-workspace";

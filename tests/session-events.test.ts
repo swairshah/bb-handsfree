@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { actionStatus, pairToolEvents, sessionEventLog } from "./session-events.ts";
+import { actionStatus, pairToolEvents, sessionEventLog } from "../shared/session-events.ts";
 
 const event = (id: number, kind: string, payload: object) => ({ id, kind, payload: JSON.stringify(payload) });
 test("same-named calls pair by identity even when results arrive in reverse order", () => {

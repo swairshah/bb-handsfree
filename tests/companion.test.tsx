@@ -3,16 +3,16 @@ import assert from "node:assert/strict";
 import { JSDOM } from "jsdom";
 import { installTestPluginRuntime, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { act, fireEvent, within } from "@testing-library/react";
-import { viewWorkspace, type ThreadView } from "./view-workspace.ts";
+import { viewWorkspace, type ThreadView } from "../shared/view-workspace.ts";
 
 const dom = new JSDOM("<!doctype html><html><body></body></html>", { url: "http://localhost", pretendToBeVisual: true });
 for (const [name, value] of Object.entries({ window: dom.window, document: dom.window.document, navigator: dom.window.navigator, HTMLElement: dom.window.HTMLElement, IS_REACT_ACT_ENVIRONMENT: true })) {
   Object.defineProperty(globalThis, name, { value, configurable: true, writable: true });
 }
 installTestPluginRuntime();
-const { CompanionTab } = await import("./companion.tsx");
-const { voiceAgent } = await import("./voice-agent.ts");
-const { LiveCallControls } = await import("./voice-chrome.tsx");
+const { CompanionTab } = await import("../ui/companion.tsx");
+const { voiceAgent } = await import("../voice/agent.ts");
+const { LiveCallControls } = await import("../ui/voice-chrome.tsx");
 after(() => dom.window.close());
 const view = (id: string): ThreadView => ({ kind: "thread", id: `thread:${id}`, threadId: id, projectId: "project", title: `Thread ${id}` });
 

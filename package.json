@@ -1,9 +1,9 @@
 {
   "name": "bb-plugin-handsfree",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "type": "module",
   "scripts": {
-    "test": "node --import tsx --test *.test.ts *.test.tsx",
+    "test": "node --import tsx --test tests/*.test.ts tests/*.test.tsx",
     "typecheck": "tsc --noEmit"
   },
   "engines": {

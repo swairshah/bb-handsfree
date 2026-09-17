@@ -18,17 +18,17 @@ import {
 } from "@get-bb/plugin-sdk/app";
 import type { PluginThreadListProps } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "./server";
-import { clientDescriptor } from "./client-identity";
-import { voiceAgent } from "./voice-agent";
-import { SessionsPanel } from "./sessions-panel";
-import { viewWorkspace } from "./view-workspace";
-import { COMPANION_TAB, CompanionTab, THREAD_WORKSPACE_ACTION } from "./companion";
-import { AudioSettings, BehaviorSettings, ModelsSettings, ShortcutsSettings } from "./settings-sections";
+import { clientDescriptor } from "./shared/client-identity";
+import { voiceAgent } from "./voice/agent";
+import { SessionsPanel } from "./ui/sessions-panel";
+import { viewWorkspace } from "./shared/view-workspace";
+import { COMPANION_TAB, CompanionTab, THREAD_WORKSPACE_ACTION } from "./ui/companion";
+import { AudioSettings, BehaviorSettings, ModelsSettings, ShortcutsSettings } from "./ui/settings-sections";
 import { cn } from "@/lib/utils";
-import { AUDIO_DEVICE_STORAGE_KEY } from "./audio-devices";
-import { MicIcon, StopIcon, WaveformIcon, useCallElapsed } from "./voice-chrome";
-import { matchShortcut, shortcutLabel } from "./shortcuts";
-import { MAC, SHORTCUT_STORAGE_KEY, shortcutStore, useShortcutSync, useShortcuts } from "./shortcut-store";
+import { AUDIO_DEVICE_STORAGE_KEY } from "./shared/audio-devices";
+import { MicIcon, StopIcon, WaveformIcon, useCallElapsed } from "./ui/voice-chrome";
+import { matchShortcut, shortcutLabel } from "./shared/shortcuts";
+import { MAC, SHORTCUT_STORAGE_KEY, shortcutStore, useShortcutSync, useShortcuts } from "./shared/shortcut-store";
 import "./app.css";
 
 function AideVoiceButton() {

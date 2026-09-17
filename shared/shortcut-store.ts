@@ -6,7 +6,7 @@
 // mirror on page load, before any rpc round-trip has completed.
 import { useEffect, useSyncExternalStore } from "react";
 import { useRealtime, useRpc } from "@get-bb/plugin-sdk/app";
-import type { rpcContract } from "./server";
+import type { rpcContract } from "../server";
 import { clientDescriptor } from "./client-identity";
 import { DEFAULT_SHORTCUTS, isMacPlatform, normalizeShortcuts, type Shortcuts } from "./shortcuts";
 

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createFakePluginHost, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
-import plugin, { toolSchemas, threadViewInstructions } from "./server.ts";
+import plugin, { toolSchemas, threadViewInstructions } from "../server.ts";
 
 test("session history and plugin logs describe the same stored action, and failed tools mark sessions", async () => {
   const { bb, harness } = createFakePluginHost({ pluginId: "handsfree" });

@@ -3,7 +3,7 @@
 // drawer so every surface speaks the same visual
 // language — neutral chrome, activity color only on the waveform.
 import React, { useEffect, useState, useSyncExternalStore } from "react";
-import { voiceAgent } from "./voice-agent";
+import { voiceAgent } from "../voice/agent";
 import { cn } from "@/lib/utils";
 
 export function WaveformIcon({ live }: { live: boolean }) {

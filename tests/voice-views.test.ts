@@ -1,8 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { VoiceAgent, type Bindings } from "./voice-agent.ts";
-import { ViewWorkspace } from "./view-workspace.ts";
-import { clientDescriptor } from "./client-identity.ts";
+import { VoiceAgent, type Bindings } from "../voice/agent.ts";
+import { ViewWorkspace } from "../shared/view-workspace.ts";
+import { clientDescriptor } from "../shared/client-identity.ts";
 
 type Call = { method: string; args: any };
 function fixture(mobile = true) {

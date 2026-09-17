@@ -13,7 +13,7 @@ import {
   shortcutLabel,
   shortcutLabelParts,
   shortcutProblem,
-} from "./shortcuts.ts";
+} from "../shared/shortcuts.ts";
 
 const base = { metaKey: false, ctrlKey: false, shiftKey: false, altKey: false };
 

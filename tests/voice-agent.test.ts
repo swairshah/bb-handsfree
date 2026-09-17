@@ -1,7 +1,7 @@
 import test, { mock } from "node:test";
 import assert from "node:assert/strict";
-import { VoiceAgent, formatThreadNotices } from "./voice-agent.ts";
-import { writeAudioDevicePreferences } from "./audio-devices.ts";
+import { VoiceAgent, formatThreadNotices } from "../voice/agent.ts";
+import { writeAudioDevicePreferences } from "../shared/audio-devices.ts";
 
 /** A VoiceAgent bound to a spy rpc that records every relayed call. */
 function agentWithRpcSpy() {

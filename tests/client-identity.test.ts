@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { isMobileClient } from "./client-identity.ts";
+import { isMobileClient } from "../shared/client-identity.ts";
 
 test("mobile routing includes iPads with desktop Safari while preserving real desktop detection", () => {
   assert.equal(isMobileClient("Mozilla/5.0 (Macintosh; Intel Mac OS X) Safari/605", false, 5), true);

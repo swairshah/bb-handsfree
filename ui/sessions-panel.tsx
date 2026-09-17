@@ -12,12 +12,12 @@ import {
   useRealtime,
   useRpc,
 } from "@get-bb/plugin-sdk/app";
-import type { rpcContract } from "./server";
-import { clientDescriptor } from "./client-identity";
-import { voiceAgent } from "./voice-agent";
+import type { rpcContract } from "../server";
+import { clientDescriptor } from "../shared/client-identity";
+import { voiceAgent } from "../voice/agent";
 import { LiveCallControls, MicIcon, WaveformIcon } from "./voice-chrome";
-import { viewWorkspace } from "./view-workspace";
-import { actionStatus, pairToolEvents } from "./session-events";
+import { viewWorkspace } from "../shared/view-workspace";
+import { actionStatus, pairToolEvents } from "../shared/session-events";
 import { COMPANION_TAB } from "./companion";
 import { cn } from "@/lib/utils";
 

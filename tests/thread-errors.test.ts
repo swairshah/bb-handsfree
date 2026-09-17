@@ -5,7 +5,7 @@ import {
   THREAD_OUTCOME_EVENT_TYPES,
   latestThreadError,
   latestThreadOutcome,
-} from "./thread-errors.ts";
+} from "../shared/thread-errors.ts";
 
 test("finds the provider error behind a newer failed lifecycle event", () => {
   const error = latestThreadError([

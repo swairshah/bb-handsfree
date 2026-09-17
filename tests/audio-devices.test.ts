@@ -9,7 +9,7 @@ import {
   resolveDevice,
   shouldRetryWithDefaultDevice,
   writeAudioDevicePreferences,
-} from "./audio-devices.ts";
+} from "../shared/audio-devices.ts";
 
 const MIC = { deviceId: "mic-1", kind: "audioinput" as const, label: "Built-in Mic" };
 const SPEAKER = { deviceId: "spk-1", kind: "audiooutput" as const, label: "Built-in Speaker" };

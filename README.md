@@ -165,8 +165,8 @@ data channel) with no native helper — unlike its VS Code sibling
 
 ```text
 app.tsx            composer button + sidebar voice bar
-voice-agent.ts     WebRTC session, data channel, tool dispatch
-voice-chrome.tsx   waveform button + session UI; sessions-panel.tsx sessions view
+voice/agent.ts     WebRTC session, data channel, tool dispatch (voice/ modules)
+ui/voice-chrome.tsx  waveform button + session UI; ui/sessions-panel.tsx sessions view
 server.ts          API key + SDP exchange, bb tools via bb.sdk, `bb handsfree` CLI
 ```
 

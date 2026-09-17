@@ -2,7 +2,7 @@ import test, { after } from "node:test";
 import assert from "node:assert/strict";
 import React, { useRef } from "react";
 import { JSDOM } from "jsdom";
-import { useDrawerViewport } from "./hooks/useDrawerViewport";
+import { useDrawerViewport } from "../hooks/useDrawerViewport";
 
 const dom = new JSDOM("<!doctype html><html><body></body></html>", { pretendToBeVisual: true });
 for (const [name, value] of Object.entries({ window: dom.window, document: dom.window.document, HTMLElement: dom.window.HTMLElement, IS_REACT_ACT_ENVIRONMENT: true })) {

@@ -8,7 +8,7 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { useRealtime, useRpc } from "@get-bb/plugin-sdk/app";
 import { toast } from "sonner";
-import type { rpcContract } from "./server";
+import type { rpcContract } from "../server";
 import {
   Dialog,
   DialogContent,
@@ -28,9 +28,9 @@ import {
   isVoice,
   type RealtimeModel,
   type Voice,
-} from "./models";
-import { voiceAgent } from "./voice-agent";
-import { deviceDisplayLabel } from "./audio-devices";
+} from "../shared/models";
+import { voiceAgent } from "../voice/agent";
+import { deviceDisplayLabel } from "../shared/audio-devices";
 import {
   DEFAULT_SHORTCUTS,
   SHORTCUT_ACTIONS,
@@ -44,8 +44,8 @@ import {
   shortcutProblem,
   type ShortcutAction,
   type Shortcuts,
-} from "./shortcuts";
-import { MAC, shortcutStore } from "./shortcut-store";
+} from "../shared/shortcuts";
+import { MAC, shortcutStore } from "../shared/shortcut-store";
 import { cn } from "@/lib/utils";
 
 type CredentialPreference = "auto" | "apiKey" | "subscription";
