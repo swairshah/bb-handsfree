@@ -174,6 +174,15 @@ export const rpcContract = defineRpcContract({
     input: z.null(),
     output: z.object({ ok: z.literal(true) }).strict(),
   },
+  /**
+   * Store the OpenAI API key. Exists so flows that discover the requirement
+   * mid-task (picking gpt-live-1, which rejects subscription auth) can capture
+   * the key right there instead of bouncing through the host settings form.
+   */
+  setApiKey: {
+    input: z.object({ key: z.string().trim().min(20).max(300) }).strict(),
+    output: z.object({ ok: z.literal(true) }).strict(),
+  },
   /** Installed plugins that expose a bb command the voice agent could run. */
   listPlugins: {
     input: z.null(),
@@ -766,10 +775,19 @@ export default async function plugin(bb: BbPluginApi) {
     }
   }
 
-  async function apiKey(): Promise<string> {
+  async function apiKey(options?: { requireKey?: boolean }): Promise<string> {
     const { openaiApiKey } = await settings.get();
     const { credentialPreference } = await readConfig();
     const key = openaiApiKey || process.env.OPENAI_API_KEY;
+    // GPT-Live rejects ChatGPT-subscription tokens (403 "Voice session access
+    // denied"), so live sessions must use a real API key regardless of the
+    // user's credential preference.
+    if (options?.requireKey) {
+      if (key) return key;
+      throw new Error(
+        "gpt-live-1 needs an OpenAI API key — the Live API does not accept ChatGPT-subscription sign-in. Add a key in Handsfree settings, or pick a gpt-realtime model.",
+      );
+    }
     // When the user pinned the subscription, try it first and only fall back to
     // a key. Otherwise (auto / apiKey) a key wins, then the subscription.
     if (credentialPreference === "subscription") {
@@ -1275,8 +1293,8 @@ export default async function plugin(bb: BbPluginApi) {
 
   bb.rpc.register(rpcContract, {
     async createCall({ sdp, threadId, projectId, onNewThreadScreen, nonce, mobile = false }) {
-      const key = await apiKey();
       const { model, voice } = await readConfig();
+      const key = await apiKey({ requireKey: isLiveModel(model) });
       const pluginCommands = await exposedPluginCommands();
       const pluginSection =
         pluginCommands.length === 0
@@ -1410,6 +1428,14 @@ export default async function plugin(bb: BbPluginApi) {
       // "not set" again rather than an empty-but-present value.
       await bb.sdk.plugins.updateSettings({ pluginId: bb.pluginId, values: { openaiApiKey: null } });
       bb.log.info("OpenAI API key cleared");
+      bb.realtime.publish("config-changed", {});
+      return { ok: true as const };
+    },
+    async setApiKey({ key }) {
+      await bb.sdk.plugins.updateSettings({ pluginId: bb.pluginId, values: { openaiApiKey: key.trim() } });
+      bb.log.info("OpenAI API key saved");
+      // Same signal the credential card already follows, so its status (and
+      // any open model picker) flips to "Using your OpenAI API key" at once.
       bb.realtime.publish("config-changed", {});
       return { ok: true as const };
     },

@@ -218,3 +218,38 @@ test("live duration snapshots keep one row per session and price at $0.05/min", 
     assert.equal(row?.costUsd, 0.025); // 30s at $0.05/min
   } finally { await harness.lifecycle.dispose(); }
 });
+
+test("gpt-live-1 calls demand an API key and never fall back to subscription auth", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "handsfree" });
+  const savedEnv = process.env.OPENAI_API_KEY;
+  delete process.env.OPENAI_API_KEY;
+  try {
+    await plugin(bb);
+    await harness.behavior.callRpc("setConfig", { model: "gpt-live-1" });
+    // No stored key, no env key: the error must name the requirement instead
+    // of sending a subscription token that OpenAI will 403.
+    await assert.rejects(
+      harness.behavior.callRpc("createCall", {
+        sdp: "offer", threadId: null, projectId: null, onNewThreadScreen: false, nonce: "call-live",
+      }),
+      /needs an OpenAI API key/,
+    );
+  } finally {
+    if (savedEnv !== undefined) process.env.OPENAI_API_KEY = savedEnv;
+    await harness.lifecycle.dispose();
+  }
+});
+
+test("setApiKey stores the trimmed key and signals the credential card", async () => {
+  const updates: unknown[] = [];
+  const { bb, harness } = createFakePluginHost({ pluginId: "handsfree", sdk: {
+    plugins: { updateSettings: async (input: unknown) => { updates.push(input); return {}; } },
+  } });
+  try {
+    await plugin(bb);
+    await harness.behavior.callRpc("setApiKey", { key: "  sk-test-0123456789abcdef0123  " });
+    assert.deepEqual(updates, [{ pluginId: "handsfree", values: { openaiApiKey: "sk-test-0123456789abcdef0123" } }]);
+    assert.ok(harness.inspection.realtimeSignals.some((signal) => signal.channel === "config-changed"));
+    await assert.rejects(harness.behavior.callRpc("setApiKey", { key: "short" }));
+  } finally { await harness.lifecycle.dispose(); }
+});

@@ -23,6 +23,7 @@ import {
   DEFAULT_VOICE,
   MODEL_OPTIONS,
   VOICE_OPTIONS,
+  isLiveModel,
   isModel,
   isVoice,
   type RealtimeModel,
@@ -144,25 +145,31 @@ interface CredentialStatus {
 }
 
 /**
- * Shows which credential Aide is using, and — only when both an API key and a
- * ChatGPT subscription are available — lets the user pick between them.
+ * Live credential status. Adding a key in the host's secret field above is a
+ * settings save with no plugin signal we can hook, so poll while the page is
+ * open — that's why entering a key surfaces changes within a couple seconds.
  */
-function CredentialCard() {
+function useCredentialStatus() {
   const rpc = useRpc<typeof rpcContract>();
   const [status, setStatus] = useState<CredentialStatus | null>(null);
-
   const refetch = useCallback(() => {
     rpc.call("getCredentialStatus", null).then(setStatus, () => undefined);
   }, [rpc]);
   useEffect(refetch, [refetch]);
   useRealtime("config-changed", refetch);
-  // Adding the key above is a host settings save with no plugin signal we can
-  // hook, so poll while this page is open. That's why entering a key here
-  // surfaces the credential picker on its own within a couple of seconds.
   useEffect(() => {
     const id = setInterval(refetch, 2500);
     return () => clearInterval(id);
   }, [refetch]);
+  return { status, setStatus, refetch };
+}
+
+/**
+ * Shows which credential Aide is using, and — only when both an API key and a
+ * ChatGPT subscription are available — lets the user pick between them.
+ */
+function CredentialCard({ status, setStatus, refetch }: ReturnType<typeof useCredentialStatus>) {
+  const rpc = useRpc<typeof rpcContract>();
 
   const statusText = (() => {
     switch (status?.effective) {
@@ -254,14 +261,44 @@ function CredentialCard() {
 }
 
 export function ModelsSettings() {
+  const rpc = useRpc<typeof rpcContract>();
   const { config, update } = useVoiceConfig();
+  const credentials = useCredentialStatus();
   const model = config?.model ?? DEFAULT_MODEL;
   const voice = config?.voice ?? DEFAULT_VOICE;
   const loading = config === null;
+  const hasKey = !!credentials.status && (credentials.status.hasApiKey || credentials.status.envKeyPresent);
+  // The live model the user tried to switch to while no API key was set; the
+  // config is left untouched (the select snaps back) until the key is saved.
+  const [pendingLiveModel, setPendingLiveModel] = useState<RealtimeModel | null>(null);
+  const [keyDraft, setKeyDraft] = useState("");
+  const [savingKey, setSavingKey] = useState(false);
+  const keyDraftValid = keyDraft.trim().length >= 20;
+
+  const closeKeyDialog = () => {
+    setPendingLiveModel(null);
+    setKeyDraft("");
+  };
+
+  async function saveKeyAndSwitch() {
+    if (!pendingLiveModel || !keyDraftValid || savingKey) return;
+    setSavingKey(true);
+    try {
+      await rpc.call("setApiKey", { key: keyDraft.trim() });
+      credentials.refetch();
+      const target = pendingLiveModel;
+      closeKeyDialog();
+      if (await update({ model: target })) toast.success(`API key saved — now using ${target}`);
+    } catch (cause) {
+      toast.error(`Could not save the key: ${cause instanceof Error ? cause.message : String(cause)}`);
+    } finally {
+      setSavingKey(false);
+    }
+  }
 
   return (
     <div className="space-y-4">
-      <CredentialCard />
+      <CredentialCard {...credentials} />
       <label className="block space-y-1">
         <span className="text-sm font-medium text-foreground">Model</span>
         <select
@@ -269,7 +306,15 @@ export function ModelsSettings() {
           disabled={loading}
           onChange={(event) => {
             const next = event.target.value;
-            if (isModel(next)) void update({ model: next });
+            if (!isModel(next)) return;
+            // gpt-live-1 rejects ChatGPT-subscription auth outright (403), so
+            // switching to it without a key would only produce broken calls —
+            // capture the key first, then switch.
+            if (isLiveModel(next) && !hasKey) {
+              setPendingLiveModel(next);
+              return;
+            }
+            void update({ model: next });
           }}
           className={selectClass}
         >
@@ -279,7 +324,56 @@ export function ModelsSettings() {
             </option>
           ))}
         </select>
+        {isLiveModel(model) ? (
+          hasKey ? (
+            <p className="text-xs italic text-muted-foreground">
+              gpt-live-1 always uses your OpenAI API key — the Live API doesn't accept ChatGPT-subscription sign-in.
+            </p>
+          ) : (
+            <div className="flex items-center justify-between gap-2 rounded-md border border-destructive/40 bg-destructive/5 px-2.5 py-1.5">
+              <span className="text-xs text-foreground">
+                gpt-live-1 needs an OpenAI API key — calls will fail until one is added.
+              </span>
+              <Button type="button" variant="outline" size="sm" onClick={() => setPendingLiveModel(model)}>
+                Add API key
+              </Button>
+            </div>
+          )
+        ) : null}
       </label>
+      <Dialog open={pendingLiveModel !== null} onOpenChange={(open) => { if (!open && !savingKey) closeKeyDialog(); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{pendingLiveModel ?? "gpt-live-1"} needs an OpenAI API key</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <p className="text-sm text-muted-foreground">
+              The Live API doesn't accept ChatGPT-subscription sign-in (<code>codex login</code>), so this model only
+              works with an API key from platform.openai.com. Your subscription keeps working for the gpt-realtime
+              models. Live calls bill $0.05/min for voice plus backend tokens on the key.
+            </p>
+            <input
+              type="password"
+              autoFocus
+              placeholder="sk-…"
+              value={keyDraft}
+              onChange={(event) => setKeyDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") void saveKeyAndSwitch();
+              }}
+              className="block w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm text-foreground"
+            />
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" disabled={savingKey} onClick={closeKeyDialog}>
+              Keep {model}
+            </Button>
+            <Button type="button" disabled={!keyDraftValid || savingKey} onClick={() => void saveKeyAndSwitch()}>
+              {savingKey ? "Saving…" : `Save key & use ${pendingLiveModel ?? "gpt-live-1"}`}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       <label className="block space-y-1">
         <span className="text-sm font-medium text-foreground">Voice</span>
         <select
