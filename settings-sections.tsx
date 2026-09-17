@@ -275,7 +275,7 @@ export function ModelsSettings() {
         >
           {MODEL_OPTIONS.map((option) => (
             <option key={option} value={option}>
-              {option}
+              {option === "gpt-live-1" ? "gpt-live-1 (full-duplex, $0.05/min + backend tokens)" : option}
             </option>
           ))}
         </select>

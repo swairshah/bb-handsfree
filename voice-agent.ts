@@ -185,6 +185,17 @@ export class VoiceAgent {
       : { inputDeviceId: "", inputLabel: "" };
   /** Serializes tool executions so outputs are submitted in call order. */
   private toolChain: Promise<void> = Promise.resolve();
+  // ---- GPT-Live (full-duplex) sessions: different data-channel protocol ----
+  /** True when the active session is a GPT-Live call (from createCall). */
+  private liveMode = false;
+  /** Backend function calls still awaiting their output (live sessions). */
+  private liveOutstandingToolCalls = 0;
+  /** Latest cumulative voice-duration snapshot in seconds (live billing). */
+  private liveUsageSeconds: number | null = null;
+  /** Per-speaker transcript accumulation for live delta events. */
+  private liveTranscripts: { user: string; assistant: string } = { user: "", assistant: "" };
+  private liveTranscriptTimers: { user: ReturnType<typeof setTimeout> | null; assistant: ReturnType<typeof setTimeout> | null } = { user: null, assistant: null };
+  private liveSpeakingTimers: { user: ReturnType<typeof setTimeout> | null; assistant: ReturnType<typeof setTimeout> | null } = { user: null, assistant: null };
   /** True while the model is generating a response (response.created→done). */
   private responseActive = false;
   /** A response.create is owed once the active response finishes. */
@@ -871,6 +882,19 @@ export class VoiceAgent {
     this.pendingNotices.clear();
     const { logText, instruction } = formatThreadNotices(entries);
     this.log("notice", { text: logText });
+    if (this.liveMode) {
+      // GPT-Live: queue the digest as spoken commentary (≤500 tokens). No
+      // response.create here — on live that starts delegated backend work.
+      dc.send(
+        JSON.stringify({
+          type: "session.commentary.append",
+          event_id: `notices_${Date.now()}`,
+          delegation_id: null,
+          content: `bb thread updates — announce each in one short sentence, naming the thread by its title: ${logText}`.slice(0, 1500),
+        }),
+      );
+      return;
+    }
     dc.send(
       JSON.stringify({
         type: "conversation.item.create",
@@ -882,6 +906,85 @@ export class VoiceAgent {
       }),
     );
     this.requestResponse(dc);
+  }
+
+  // ---- GPT-Live event handling (full-duplex; see server createCall) ----
+
+  /** Accumulate a transcript delta and drive the speaking indicator (no VAD on live). */
+  private bufferLiveTranscript(speaker: "user" | "assistant", delta: string) {
+    if (!delta) return;
+    this.liveTranscripts[speaker] += delta;
+    if (speaker === "user") this.setUserSpeaking(true);
+    else this.setAssistantSpeaking(true);
+    const speak = this.liveSpeakingTimers[speaker];
+    if (speak) clearTimeout(speak);
+    this.liveSpeakingTimers[speaker] = setTimeout(() => {
+      this.liveSpeakingTimers[speaker] = null;
+      if (speaker === "user") {
+        this.setUserSpeaking(false);
+        if (this.pendingNotices.size > 0) this.scheduleNoticeDrain();
+      } else this.setAssistantSpeaking(false);
+    }, 900);
+    const flush = this.liveTranscriptTimers[speaker];
+    if (flush) clearTimeout(flush);
+    // Deltas carry fragments with no turn-completed event; a quiet gap is the
+    // best available "utterance finished" signal for the transcript log.
+    this.liveTranscriptTimers[speaker] = setTimeout(() => this.flushLiveTranscript(speaker), 1500);
+  }
+
+  private flushLiveTranscript(speaker: "user" | "assistant") {
+    const timer = this.liveTranscriptTimers[speaker];
+    if (timer) clearTimeout(timer);
+    this.liveTranscriptTimers[speaker] = null;
+    const text = this.liveTranscripts[speaker].trim();
+    this.liveTranscripts[speaker] = "";
+    if (text) this.log(speaker, { text });
+  }
+
+  private handleLiveEvent(dc: RTCDataChannel, type: string, event: Record<string, unknown>) {
+    if (type === "session.started") {
+      const session = event.session as { id?: unknown } | undefined;
+      this.logDiag("live.session.started", { id: typeof session?.id === "string" ? session.id : null });
+    } else if (type === "session.input_transcript.delta") {
+      this.bufferLiveTranscript("user", String(event.delta ?? ""));
+    } else if (type === "session.output_transcript.delta") {
+      this.bufferLiveTranscript("assistant", String(event.delta ?? ""));
+    } else if (type === "session.delegation.created") {
+      this.logDiag("live.delegation.created", {
+        target: String(event.target ?? ""),
+        delegationId: String(event.delegation_id ?? event.id ?? ""),
+      });
+    } else if (type === "response.event") {
+      // Nested Responses events from the delegated backend. Completed function
+      // calls arrive as response.output_item.done items; we execute them and
+      // submit outputs via response.item.create (see handleToolCall).
+      const nested = (event.event ?? {}) as Record<string, unknown>;
+      if (String(nested.type ?? "") === "response.output_item.done") {
+        const item = (nested.item ?? {}) as Record<string, unknown>;
+        if (item.type === "function_call") {
+          this.liveOutstandingToolCalls += 1;
+          this.toolChain = this.toolChain
+            .then(() => this.handleToolCall(dc, { name: item.name, call_id: item.call_id, arguments: item.arguments }))
+            .catch(() => undefined);
+        }
+      }
+    } else if (type === "session.usage.updated") {
+      const usage = event.usage as { seconds?: unknown } | undefined;
+      if (typeof usage?.seconds === "number") this.liveUsageSeconds = usage.seconds;
+    } else if (type === "session.closed") {
+      const usage = event.usage as { seconds?: unknown } | undefined;
+      if (typeof usage?.seconds === "number") this.liveUsageSeconds = usage.seconds;
+      const reason = String(event.reason ?? "");
+      this.logDiag("live.session.closed", { reason });
+      if (reason && reason !== "close_requested" && reason !== "remote_hangup") {
+        toast.info(`Aide: call ended (${reason.replace(/_/g, " ")})`);
+      }
+      this.stop(); // stop() records the final usage snapshot
+    } else if (type === "error") {
+      const detail = (event.error as { message?: string } | undefined)?.message;
+      this.log("error", { message: detail ?? "live session error" });
+      toast.error(`Aide: ${detail ?? "live session error"}`);
+    }
   }
 
   /** Another window (or this one) started a call: only the newest survives. */
@@ -911,6 +1014,37 @@ export class VoiceAgent {
   stop() {
     const endedNonce = this.nonce;
     if (this.session) this.log("session.stopped");
+    if (this.liveMode) {
+      // Flush buffered transcript text while the session identity still exists.
+      this.flushLiveTranscript("user");
+      this.flushLiveTranscript("assistant");
+      // Best effort: persist the last cumulative duration snapshot (live bills
+      // per second; the server keeps the largest snapshot per session).
+      if (endedNonce && this.liveUsageSeconds !== null) {
+        void this.bindings?.rpc
+          .call("recordUsage", { model: null, sessionId: endedNonce, usage: { seconds: this.liveUsageSeconds } })
+          .catch(() => undefined);
+      }
+      // Ask OpenAI to finalize the session. We still tear down immediately —
+      // the snapshot above covers billing if session.closed never reaches us.
+      try {
+        if (this.session?.dc?.readyState === "open") this.session.dc.send(JSON.stringify({ type: "session.close" }));
+      } catch {
+        /* tearing down anyway */
+      }
+    }
+    this.liveMode = false;
+    this.liveOutstandingToolCalls = 0;
+    this.liveUsageSeconds = null;
+    for (const speaker of ["user", "assistant"] as const) {
+      const flush = this.liveTranscriptTimers[speaker];
+      if (flush) clearTimeout(flush);
+      this.liveTranscriptTimers[speaker] = null;
+      const speak = this.liveSpeakingTimers[speaker];
+      if (speak) clearTimeout(speak);
+      this.liveSpeakingTimers[speaker] = null;
+      this.liveTranscripts[speaker] = "";
+    }
     this.clearConnectWatchdog();
     this.stopPresenceHeartbeat();
     this.liveStartedAt = null;
@@ -1066,7 +1200,21 @@ export class VoiceAgent {
       name, callId, output: output.slice(0, 4000), status: status ?? actionStatus({ output }),
       ...(presentation ? { presentation } : {}), ...(label ? { label } : {}),
     });
+    if (this.liveMode) this.liveOutstandingToolCalls = Math.max(0, this.liveOutstandingToolCalls - 1);
     if (!callId || dc.readyState !== "open" || this.nonce !== toolSessionId) return;
+    if (this.liveMode) {
+      // Live delegation: append the result as a Responses item, then continue
+      // the backend explicitly — but only once every pending call in this
+      // response has an output (continuing early is rejected by the API).
+      dc.send(
+        JSON.stringify({
+          type: "response.item.create",
+          item: { type: "function_call_output", call_id: callId, output },
+        }),
+      );
+      if (this.liveOutstandingToolCalls === 0) dc.send(JSON.stringify({ type: "response.create" }));
+      return;
+    }
     // Creating the output item is always safe; only response.create must wait.
     dc.send(
       JSON.stringify({
@@ -1215,6 +1363,11 @@ export class VoiceAgent {
           return;
         }
         const type = String(event.type ?? "");
+        if (this.liveMode) {
+          // GPT-Live sessions speak a different event protocol end to end.
+          this.handleLiveEvent(dc, type, event);
+          return;
+        }
         if (type === "response.created") {
           this.setResponseActive(true);
         } else if (type === "output_audio_buffer.started") {
@@ -1280,13 +1433,14 @@ export class VoiceAgent {
       const localSdp = pc.localDescription?.sdp;
       if (!localSdp) throw new Error("No local SDP offer");
 
-      const { sdp } = await bindings.rpc.call("createCall", {
+      const { sdp, live } = await bindings.rpc.call("createCall", {
         sdp: localSdp,
         nonce,
         mobile: clientDescriptor.mobile,
         ...bindings.context,
       });
       if (this.session?.pc !== pc) return; // stopped while exchanging
+      this.liveMode = live; // before the answer lands, so no event is misread
       await pc.setRemoteDescription({ type: "answer", sdp });
     } catch (error) {
       this.stop();

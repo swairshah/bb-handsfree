@@ -14,8 +14,10 @@ import {
   DEFAULT_VOICE,
   MODEL_OPTIONS,
   VOICE_OPTIONS,
+  isLiveModel,
   isModel,
   isVoice,
+  liveVoice,
   type RealtimeModel,
   type Voice,
 } from "./models";
@@ -56,9 +58,15 @@ export const rpcContract = defineRpcContract({
         nonce: z.string().min(1),
       })
       .strict(),
-    output: z.object({ sdp: z.string() }).strict(),
+    output: z
+      .object({
+        sdp: z.string(),
+        /** True for a GPT-Live session: different data-channel event protocol. */
+        live: z.boolean(),
+      })
+      .strict(),
   },
-  /** Record token usage from one realtime response.done event. */
+  /** Record token usage (realtime response.done) or live duration snapshots. */
   recordUsage: {
     input: z
       .object({
@@ -334,6 +342,13 @@ export const rpcContract = defineRpcContract({
 });
 
 const REALTIME_ENDPOINT = "https://api.openai.com/v1/realtime/calls";
+// GPT-Live (full-duplex) sessions use a different API surface: JSON body with
+// `session` + `transport`, answer SDP in `transport.sdp` (developers.openai.com
+// /api/docs/guides/voice-webrtc?api=live).
+const LIVE_ENDPOINT = "https://api.openai.com/v1/live/sessions";
+// The Responses model that carries the full Handsfree prompt and tool set when
+// gpt-live-1 delegates reasoning and tool use (the docs' recommended default).
+const LIVE_BACKEND_MODEL = "gpt-5.6-terra";
 
 // USD per 1M tokens for the gpt-realtime family (openai.com/api/pricing,
 // checked 2026-02). Cached input (text or audio) is a flat $0.40.
@@ -343,6 +358,10 @@ const RATES = {
   cachedIn: 0.4,
   textOut: 16,
   audioOut: 64,
+  // GPT-Live bills the voice frontend per minute (billed per second), not per
+  // token. Backend (Responses) usage is billed separately by OpenAI and is not
+  // tracked here.
+  liveMinute: 0.05,
 };
 
 interface UsageRow {
@@ -354,6 +373,8 @@ interface UsageRow {
   cached_audio: number;
   output_text: number;
   output_audio: number;
+  /** GPT-Live voice duration in seconds (cumulative snapshot); 0 for realtime rows. */
+  duration_seconds: number;
 }
 
 /** Estimated USD cost of one usage row at current RATES. */
@@ -366,7 +387,8 @@ function costUsd(row: UsageRow): number {
       (row.cached_text + row.cached_audio) * RATES.cachedIn +
       row.output_text * RATES.textOut +
       row.output_audio * RATES.audioOut) /
-    1_000_000
+      1_000_000 +
+    ((row.duration_seconds ?? 0) / 60) * RATES.liveMinute
   );
 }
 
@@ -490,6 +512,8 @@ export default async function plugin(bb: BbPluginApi) {
       note TEXT,
       content TEXT NOT NULL
     )`,
+    // Migrations are index-recorded: always append, never insert or reorder.
+    `ALTER TABLE usage_events ADD COLUMN duration_seconds INTEGER NOT NULL DEFAULT 0`,
   ]);
 
   // The API key is the ONE declarative setting: secrets must live here to get
@@ -1214,11 +1238,12 @@ export default async function plugin(bb: BbPluginApi) {
           const rows = db
             .prepare("SELECT * FROM usage_events WHERE ts >= ? ORDER BY ts")
             .all(since) as UsageRow[];
-          const byDay = new Map<string, { responses: number; audioIn: number; audioOut: number; textIn: number; textOut: number; cached: number; cost: number }>();
+          const byDay = new Map<string, { responses: number; audioIn: number; audioOut: number; textIn: number; textOut: number; cached: number; liveSeconds: number; cost: number }>();
           for (const row of rows) {
             const day = new Date(row.ts).toISOString().slice(0, 10);
-            const entry = byDay.get(day) ?? { responses: 0, audioIn: 0, audioOut: 0, textIn: 0, textOut: 0, cached: 0, cost: 0 };
+            const entry = byDay.get(day) ?? { responses: 0, audioIn: 0, audioOut: 0, textIn: 0, textOut: 0, cached: 0, liveSeconds: 0, cost: 0 };
             entry.responses += 1;
+            entry.liveSeconds += row.duration_seconds ?? 0;
             entry.audioIn += row.input_audio;
             entry.audioOut += row.output_audio;
             entry.textIn += row.input_text;
@@ -1234,11 +1259,11 @@ export default async function plugin(bb: BbPluginApi) {
           }
           if (daysOut.length === 0) return { exitCode: 0, stdout: `No voice usage recorded in the last ${days} day(s).` };
           const lines = daysOut.map(
-            (d) => `${d.day}  $${d.cost.toFixed(4)}  (${d.responses} responses \u00b7 audio ${d.audioIn}/${d.audioOut} \u00b7 text ${d.textIn}/${d.textOut} \u00b7 cached ${d.cached})`,
+            (d) => `${d.day}  $${d.cost.toFixed(4)}  (${d.responses} responses \u00b7 audio ${d.audioIn}/${d.audioOut} \u00b7 text ${d.textIn}/${d.textOut} \u00b7 cached ${d.cached}${d.liveSeconds ? ` \u00b7 live ${Math.round(d.liveSeconds / 6) / 10}min` : ""})`,
           );
           return {
             exitCode: 0,
-            stdout: `Voice usage, last ${days} day(s) \u2014 estimated at gpt-realtime rates:\n${lines.join("\n")}\nTotal: ~$${total.toFixed(4)}  (tokens in/out per line; authoritative numbers: platform.openai.com/usage)`,
+            stdout: `Voice usage, last ${days} day(s) \u2014 estimated at gpt-realtime/gpt-live rates (gpt-live backend tokens are billed separately, not tracked):\n${lines.join("\n")}\nTotal: ~$${total.toFixed(4)}  (tokens in/out per line; authoritative numbers: platform.openai.com/usage)`,
           };
         }
         return { exitCode: 1, stderr: `Unknown command: ${command}\n\n${help}` };
@@ -1257,10 +1282,60 @@ export default async function plugin(bb: BbPluginApi) {
         pluginCommands.length === 0
           ? ""
           : `\n\nInstalled bb plugins contribute extra commands you can run with run_plugin_command:\n${pluginCommands.map((c) => `- ${c.id}: bb ${c.name} — ${c.summary}`).join("\n")}\nWhen unsure of a plugin's subcommands, run it with argv ["--help"] first. Summarize command output aloud in a sentence or two; never read raw JSON or long output verbatim.`;
+      const instructions = `${activePrompt()}${pluginSection}\n\n${threadViewInstructions(mobile)}\n\nCurrent context: threadId=${threadId ?? "none"}, projectId=${projectId ?? "none"}${onNewThreadScreen ? " — the user is on the New thread screen (no thread exists yet; they're composing the prompt for one)" : ""}. Call get_context for fresh context — the user navigates while talking.`;
+
+      if (isLiveModel(model)) {
+        // GPT-Live is a full-duplex voice frontend: it only handles the
+        // conversation. The full Handsfree prompt and tool set live on a
+        // Responses backend via delegation; tool calls come back to the client
+        // as nested `response.event` messages (see voice-agent.ts).
+        const liveSession = {
+          model,
+          instructions:
+            "You are Aide, the voice of the user's bb workspace (an IDE for coding agents). Keep replies short and conversational. Delegate anything that needs bb data or actions — projects, threads, machines, composer text, plugin commands — to the backend, and keep the conversation moving while it works. Announce backend results in one or two sentences; never read ids, code, or raw output aloud.",
+          audio: { output: { voice: liveVoice(voice) } },
+          delegation: {
+            type: "responses",
+            responses: {
+              model: LIVE_BACKEND_MODEL,
+              instructions,
+              tools: toolSchemas(pluginCommands, mobile),
+              tool_choice: "auto",
+            },
+          },
+        };
+        const response = await fetch(LIVE_ENDPOINT, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ session: liveSession, transport: { type: "webrtc", sdp } }),
+        });
+        const text = await response.text();
+        if (!response.ok) {
+          bb.log.error(`OpenAI live session failed: ${response.status} ${text.slice(0, 500)}`);
+          throw new Error(`OpenAI live session failed: ${response.status} ${response.statusText}`);
+        }
+        let answer: string | undefined;
+        let liveSessionId: string | undefined;
+        try {
+          const parsed = JSON.parse(text) as { session?: { id?: string }; transport?: { sdp?: string } };
+          answer = parsed.transport?.sdp;
+          liveSessionId = parsed.session?.id;
+        } catch {
+          /* handled below */
+        }
+        if (typeof answer !== "string" || !answer) {
+          bb.log.error(`OpenAI live session returned no SDP answer: ${text.slice(0, 500)}`);
+          throw new Error("OpenAI live session returned no SDP answer");
+        }
+        bb.log.info(`live session created: ${liveSessionId ?? "(no id)"}`);
+        bb.realtime.publish("voice-call", { nonce });
+        return { sdp: answer, live: true };
+      }
+
       const session = {
         type: "realtime",
         model,
-        instructions: `${activePrompt()}${pluginSection}\n\n${threadViewInstructions(mobile)}\n\nCurrent context: threadId=${threadId ?? "none"}, projectId=${projectId ?? "none"}${onNewThreadScreen ? " — the user is on the New thread screen (no thread exists yet; they're composing the prompt for one)" : ""}. Call get_context for fresh context — the user navigates while talking.`,
+        instructions,
         audio: {
           input: {
             noise_reduction: { type: "near_field" },
@@ -1295,7 +1370,7 @@ export default async function plugin(bb: BbPluginApi) {
       // One voice session at a time, everywhere: every connected client hears
       // this and stops any session whose nonce differs.
       bb.realtime.publish("voice-call", { nonce });
-      return { sdp: text };
+      return { sdp: text, live: false };
     },
     async getTools() {
       const local = new Set(["set_composer_text", "append_composer_text"]);
@@ -1519,6 +1594,28 @@ export default async function plugin(bb: BbPluginApi) {
     },
     async recordUsage({ model, sessionId, usage }) {
       const num = (value: unknown): number => (typeof value === "number" && Number.isFinite(value) ? value : 0);
+      const seconds = num(usage.seconds);
+      if (seconds > 0 && sessionId) {
+        // GPT-Live duration: `session.usage.updated`/`session.closed` report
+        // CUMULATIVE seconds, so one row per session and the largest snapshot
+        // wins — never sum snapshots.
+        const { model: liveConfigured } = await readConfig();
+        const existing = db
+          .prepare("SELECT id, duration_seconds FROM usage_events WHERE session_id = ? AND duration_seconds > 0")
+          .get(sessionId) as { id: number; duration_seconds: number } | undefined;
+        if (existing) {
+          db.prepare("UPDATE usage_events SET ts = ?, duration_seconds = ? WHERE id = ?").run(
+            Date.now(),
+            Math.max(existing.duration_seconds, seconds),
+            existing.id,
+          );
+        } else {
+          db.prepare(
+            `INSERT INTO usage_events (ts, model, session_id, duration_seconds) VALUES (?, ?, ?, ?)`,
+          ).run(Date.now(), model ?? liveConfigured, sessionId, seconds);
+        }
+        return { ok: true as const };
+      }
       const inDetails = (usage.input_token_details ?? {}) as Record<string, unknown>;
       const outDetails = (usage.output_token_details ?? {}) as Record<string, unknown>;
       const cachedDetails = (inDetails.cached_tokens_details ?? {}) as Record<string, unknown>;

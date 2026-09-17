@@ -152,3 +152,69 @@ test("desktop focus still opens the real bb thread through the original SDK oper
     assert.equal(harness.inspection.sdk.callsTo("threads.open").length, 1);
   } finally { await harness.lifecycle.dispose(); }
 });
+
+test("gpt-live-1 sessions post to the Live API with delegation and report live: true", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "handsfree" });
+  const originalFetch = globalThis.fetch;
+  const requests: { url: string; init: RequestInit }[] = [];
+  globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
+    requests.push({ url: String(url), init: init ?? {} });
+    if (String(url).includes("/v1/live/sessions")) {
+      return new Response(
+        JSON.stringify({ session: { id: "live_test" }, transport: { type: "webrtc", sdp: "answer-live" } }),
+        { status: 201 },
+      );
+    }
+    return new Response("answer-realtime", { status: 200 });
+  }) as typeof fetch;
+  const savedEnv = process.env.OPENAI_API_KEY;
+  process.env.OPENAI_API_KEY = "test-key";
+  try {
+    await plugin(bb);
+    await harness.behavior.callRpc("setConfig", { model: "gpt-live-1" });
+    const live = await harness.behavior.callRpc("createCall", {
+      sdp: "offer", threadId: null, projectId: null, onNewThreadScreen: false, nonce: "call-live",
+    }) as { sdp: string; live: boolean };
+    assert.deepEqual(live, { sdp: "answer-live", live: true });
+    const request = requests.find((r) => r.url.includes("/v1/live/sessions"));
+    assert.ok(request, "expected a POST to /v1/live/sessions");
+    const body = JSON.parse(String(request!.init.body)) as any;
+    assert.equal(body.session.model, "gpt-live-1");
+    assert.equal(body.transport.type, "webrtc");
+    assert.equal(body.transport.sdp, "offer");
+    // The full Handsfree prompt and tool set ride on the Responses backend.
+    assert.equal(body.session.delegation.type, "responses");
+    assert.ok(body.session.delegation.responses.tools.some((tool: any) => tool.name === "get_context"));
+    assert.match(body.session.delegation.responses.instructions, /Current context/);
+    // marin is the safe default: classic realtime voices are not documented for live.
+    assert.equal(body.session.audio.output.voice, "marin");
+
+    await harness.behavior.callRpc("setConfig", { model: "gpt-realtime-2.1" });
+    const realtime = await harness.behavior.callRpc("createCall", {
+      sdp: "offer", threadId: null, projectId: null, onNewThreadScreen: false, nonce: "call-rt",
+    }) as { sdp: string; live: boolean };
+    assert.deepEqual(realtime, { sdp: "answer-realtime", live: false });
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (savedEnv === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = savedEnv;
+    await harness.lifecycle.dispose();
+  }
+});
+
+test("live duration snapshots keep one row per session and price at $0.05/min", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "handsfree" });
+  try {
+    await plugin(bb);
+    await harness.behavior.callRpc("logEvent", { sessionId: "live-call", kind: "session.started", payload: {} });
+    // Cumulative snapshots: the largest wins; out-of-order and repeats collapse.
+    for (const seconds of [10, 30, 30, 20]) {
+      await harness.behavior.callRpc("recordUsage", { model: "gpt-live-1", sessionId: "live-call", usage: { seconds } });
+    }
+    const { sessions } = await harness.behavior.callRpc("listSessions", null) as {
+      sessions: { id: string; costUsd: number }[];
+    };
+    const row = sessions.find((session) => session.id === "live-call");
+    assert.equal(row?.costUsd, 0.025); // 30s at $0.05/min
+  } finally { await harness.lifecycle.dispose(); }
+});

@@ -102,9 +102,14 @@ skill.
 
 Open the Handsfree plugin settings for curated sections:
 
-- **Models & voice** — the OpenAI Realtime model, the assistant voice (marin
+- **Models & voice** — the OpenAI voice model, the assistant voice (marin
   and cedar are the highest-quality options), and a badge showing which
-  credential Aide will use.
+  credential Aide will use. Besides the gpt-realtime family, `gpt-live-1`
+  (OpenAI's full-duplex Live model) is supported: the live model handles the
+  conversation and delegates all bb tools to a Responses backend
+  (gpt-5.6-terra). Live sessions bill $0.05/min for voice plus separate
+  backend token usage (not tracked by `bb handsfree usage`); voices other
+  than marin/cedar fall back to marin.
 - **Behavior** — whether Aide announces thread events, and which installed
   plugins' `bb` commands it may run (all / none / a specific list).
 - **Audio** — pick and test the microphone with a live input-level meter. The
