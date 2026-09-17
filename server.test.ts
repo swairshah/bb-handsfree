@@ -258,6 +258,10 @@ test("set_thread_model changes sticky configuration without messaging or startin
 
 /** start_thread resolves the target project first, so every start_thread test
  * stubs projects.list with one standard project ("project") on host-1. */
+const fakeHostsSdk = {
+  list: async () => [{ id: "host-1", name: "Lexi's MacBook", status: "connected" }],
+};
+
 const fakeProjectsSdk = {
   list: async () => [{
     id: "project",
@@ -301,6 +305,7 @@ test("start_thread resolves spoken provider and model names and marks both overr
   const captured: { spawned?: Record<string, unknown> } = {};
   const { bb, harness } = createFakePluginHost({ pluginId: "handsfree", sdk: {
     projects: fakeProjectsSdk,
+    hosts: fakeHostsSdk,
     providers: {
       list: async () => [{ id: "pi", displayName: "Pi", available: true }],
       models: async () => ({
@@ -342,6 +347,7 @@ test("start_thread searches the model catalog without changing the requested Fab
   const spawnedModels: unknown[] = [];
   const { bb, harness } = createFakePluginHost({ pluginId: "handsfree", sdk: {
     projects: fakeProjectsSdk,
+    hosts: fakeHostsSdk,
     providers: {
       list: async () => [{ id: "pi", displayName: "Pi", available: true }],
       models: async () => ({
@@ -393,6 +399,7 @@ test("start_thread searches the model catalog without changing the requested Fab
 test("start_thread rejects a model that is unavailable for the requested provider", async () => {
   const { bb, harness } = createFakePluginHost({ pluginId: "handsfree", sdk: {
     projects: fakeProjectsSdk,
+    hosts: fakeHostsSdk,
     providers: {
       list: async () => [{ id: "pi", displayName: "Pi", available: true }],
       models: async () => ({ modelLoadError: null, models: [], selectedOnlyModels: [] }),
@@ -409,6 +416,44 @@ test("start_thread rejects a model that is unavailable for the requested provide
     assert.equal(result.status, "error");
     assert.match(result.output, /not available for provider "pi"/);
     assert.equal(harness.inspection.sdk.callsTo("threads.spawn").length, 0);
+  } finally { await harness.lifecycle.dispose(); }
+});
+
+test("start_thread resolves a spoken machine name and rejects unknown machines with the connected list", async () => {
+  const spawnedHosts: unknown[] = [];
+  const { bb, harness } = createFakePluginHost({ pluginId: "handsfree", sdk: {
+    projects: fakeProjectsSdk,
+    hosts: fakeHostsSdk,
+    threads: {
+      spawn: async (args: { environment?: { hostId?: string } }) => {
+        spawnedHosts.push(args.environment?.hostId);
+        return makeThreadResponse({ id: "named-host-thread", projectId: "project", providerId: "codex" });
+      },
+      open: async () => ({ delivered: 1 }),
+    },
+  } as any });
+  try {
+    await plugin(bb);
+    const byName = await harness.behavior.callRpc("runTool", {
+      name: "start_thread",
+      args: { prompt: "Check the version", machine_id: "lexi's macbook" },
+      threadId: null,
+      projectId: "project",
+    }) as any;
+    assert.equal(byName.status, "success", byName.output);
+    assert.deepEqual(spawnedHosts, ["host-1"]);
+    assert.equal(JSON.parse(byName.output).started.machine, "Lexi's MacBook");
+
+    const unknown = await harness.behavior.callRpc("runTool", {
+      name: "start_thread",
+      args: { prompt: "Check the version", machine_id: "Studio Mini" },
+      threadId: null,
+      projectId: "project",
+    }) as any;
+    assert.equal(unknown.status, "error");
+    assert.match(unknown.output, /No machine matches "Studio Mini"/);
+    assert.match(unknown.output, /Lexi's MacBook/);
+    assert.equal(spawnedHosts.length, 1);
   } finally { await harness.lifecycle.dispose(); }
 });
 

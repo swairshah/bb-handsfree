@@ -464,7 +464,7 @@ export function toolSchemas(pluginCommands: PluginCommandInfo[] = [], mobile = f
     { type: "function", name: "set_pane", description: "Change a thread pane's presentation in the bb app: spotlight, clear-spotlight, maximize, restore, or toggle.", parameters: { type: "object", properties: { thread_id: { type: "string" }, action: { type: "string", enum: ["spotlight", "clear-spotlight", "maximize", "restore", "toggle"] } }, required: ["thread_id", "action"] } },
     { type: "function", name: "send_to_thread", description: "Send a work instruction or follow-up message to a thread's agent. Starts a turn if idle, queues/steers if running. Never use this for provider, model, reasoning, or other thread configuration changes; use the matching configuration tool instead.", parameters: { type: "object", properties: { thread_id: { type: "string" }, message: { type: "string" } }, required: ["thread_id", "message"] } },
     { type: "function", name: "set_thread_model", description: "Change an existing thread's sticky model for its next and later turns without sending the agent a message or starting a turn. The thread keeps its current harness/provider. The backend searches that provider's model catalog for the user's wording.", parameters: { type: "object", properties: { thread_id: { type: "string" }, model: { type: "string", description: "The user's requested model wording or exact model id." } }, required: ["thread_id", "model"] } },
-    { type: "function", name: "start_thread", description: "Start a new agent thread. Only pass prompt when the user dictated actual work; With no prompt, this opens bb's New thread screen for the user to type their own. Omit provider_id and model to use the project's defaults. Set them only when the user explicitly requests a harness/provider or model. Runs on the project's default machine unless machine_id is given — if the project lives on several connected machines and the user didn't say which, check list_machines and ask one short question instead of guessing. Threads can also run outside any project: pass the personal project's id from list_projects (or omit project_id when there is no current project) and the thread lands in the Personal section, no machine choice needed.", parameters: { type: "object", properties: { project_id: { type: "string", description: "Project id; defaults to the user's current project, or to the personal project when there is none." }, prompt: { type: "string", description: "The user's own instruction for the agent, verbatim. Omit if they didn't give one." }, title: { type: "string" }, machine_id: { type: "string", description: "Machine (host) id to run on, from list_machines. Omit to use the project's default machine." }, provider_id: { type: "string", description: "Requested bb agent harness/provider id, such as pi, codex, or claude-code. Set only when the user explicitly asks; otherwise omit for project defaults." }, model: { type: "string", description: "The user's requested model wording. The backend searches the selected provider's catalog, so pass the name as heard instead of inventing or rearranging an exact id. Exact ids and unambiguous short names also work. Set only when the user explicitly asks; otherwise omit for project defaults." } } } },
+    { type: "function", name: "start_thread", description: "Start a new agent thread. Only pass prompt when the user dictated actual work; With no prompt, this opens bb's New thread screen for the user to type their own. Omit provider_id and model to use the project's defaults. Set them only when the user explicitly requests a harness/provider or model. Runs on the project's default machine unless machine_id is given — if the project lives on several connected machines and the user didn't say which, check list_machines and ask one short question instead of guessing. Threads can also run outside any project: pass the personal project's id from list_projects (or omit project_id when there is no current project) and the thread lands in the Personal section, no machine choice needed.", parameters: { type: "object", properties: { project_id: { type: "string", description: "Project id; defaults to the user's current project, or to the personal project when there is none." }, prompt: { type: "string", description: "The user's own instruction for the agent, verbatim. Omit if they didn't give one." }, title: { type: "string" }, machine_id: { type: "string", description: "Machine (host) id from list_machines, or the machine's name as the user said it. Omit to use the project's default machine." }, provider_id: { type: "string", description: "Requested bb agent harness/provider id, such as pi, codex, or claude-code. Set only when the user explicitly asks; otherwise omit for project defaults." }, model: { type: "string", description: "The user's requested model wording. The backend searches the selected provider's catalog, so pass the name as heard instead of inventing or rearranging an exact id. Exact ids and unambiguous short names also work. Set only when the user explicitly asks; otherwise omit for project defaults." } } } },
     { type: "function", name: "stop_thread", description: "Stop a running thread.", parameters: { type: "object", properties: { thread_id: { type: "string" } }, required: ["thread_id"] } },
     { type: "function", name: "archive_thread", description: "Archive a thread (and its children).", parameters: { type: "object", properties: { thread_id: { type: "string" } }, required: ["thread_id"] } },
     { type: "function", name: "rename_thread", description: "Rename a thread.", parameters: { type: "object", properties: { thread_id: { type: "string" }, title: { type: "string" } }, required: ["thread_id", "title"] } },
@@ -495,7 +495,7 @@ Rules:
 - Prefer focus_thread so the user sees what you are talking about.
 - While a voice session is active, bb sends you updates when visible threads finish or fail (when Announcements is enabled). You can notify the user: if they ask to be told when a thread finishes, say yes, then announce the update in one short sentence when it arrives. Always name the thread by its title in that sentence; several threads may be running, so a bare "it finished" is ambiguous. Never claim that you cannot notify them, and do not poll the thread.
 - When read_thread returns lastOutcome, report that outcome plainly instead of guessing why output is missing. When a thread has status error and read_thread still does not explain why, call get_thread_error with that thread id before answering. Never say no details are available without checking.
-- Threads run on a machine. start_thread uses the project's default machine unless you pass machine_id — when the project is on several connected machines and the user didn't name one, use list_machines and ask one short question (e.g. "On your MacBook or the studio?") before starting. The personal project ("no project") is the exception: it needs no machine or git checkout — just start the thread and it appears in the Personal section.
+- Threads run on a machine. start_thread uses the project's default machine unless you pass machine_id — when the project is on several connected machines and the user didn't name one, use list_machines and ask one short question (e.g. "On your MacBook or the studio?") before starting. The personal project ("no project") needs no git checkout and no machine choice — but it CAN run on any connected machine: pass machine_id when the user names one, omit it for the default. Never claim a personal thread needs a project to run on a specific machine.
 - Use list_providers when the user asks which agent harnesses or models are available. Pass provider_id when they want the models for one harness.
 - Never invent or rearrange a model id. Pass the user's model wording to start_thread or set_thread_model, which searches the selected provider's catalog for one matching model. If the request is still ambiguous, use list_providers with provider_id before asking the user.
 - A request to change an existing thread's model is configuration: use set_thread_model. Never send a model change to the thread as a message, because that starts an agent turn without changing the model.
@@ -1377,13 +1377,33 @@ export default async function plugin(bb: BbPluginApi) {
               : "No project selected and no personal project exists. Ask the user or call list_projects.",
           );
         }
+        // The voice model sometimes passes the machine's spoken name instead
+        // of a host id from list_machines; resolve either, and fail with the
+        // connected machine names rather than bb's bare HTTP 404.
+        let hostId: string | null = null;
+        let hostName: string | null = null;
+        if (machineId) {
+          const hosts = await bb.sdk.hosts.list();
+          const wanted = machineId.toLowerCase();
+          const host =
+            hosts.find((h) => h.id === machineId) ??
+            hosts.find((h) => h.name.toLowerCase() === wanted) ??
+            hosts.find((h) => h.name.toLowerCase().includes(wanted));
+          if (!host) {
+            throw new Error(
+              `No machine matches "${machineId}". Connected machines: ${hosts.map((h) => h.name).join(", ") || "none"}. Use list_machines for ids.`,
+            );
+          }
+          hostId = host.id;
+          hostName = host.name;
+        }
         const requestedProvider =
           typeof args.provider_id === "string" && args.provider_id.trim() ? args.provider_id.trim() : null;
         const requestedModel =
           typeof args.model === "string" && args.model.trim() ? args.model.trim() : null;
         const execution = await resolveRequestedExecution(
           project.id,
-          machineId,
+          hostId,
           requestedProvider,
           requestedModel,
         );
@@ -1399,13 +1419,14 @@ export default async function plugin(bb: BbPluginApi) {
         let thread: Awaited<ReturnType<typeof spawn>>;
         if (project.kind === "personal") {
           // Personal threads must use a personal workspace (no git checkout);
-          // managed worktrees are rejected with HTTP 400.
+          // managed worktrees are rejected with HTTP 400. They can still run
+          // on any connected machine via hostId.
           thread = await spawn({
             type: "host",
-            ...(machineId ? { hostId: machineId } : {}),
+            ...(hostId ? { hostId } : {}),
             workspace: { type: "personal" },
           });
-        } else if (machineId) {
+        } else if (hostId) {
           // A named machine gets a fresh managed worktree from the default
           // branch there. Projects that aren't git repos can't have worktrees,
           // so fall back to working directly in the project's source directory
@@ -1413,15 +1434,15 @@ export default async function plugin(bb: BbPluginApi) {
           try {
             thread = await spawn({
               type: "host",
-              hostId: machineId,
+              hostId,
               workspace: { type: "managed-worktree", baseBranch: { kind: "default" } },
             });
           } catch (error) {
-            const source = project.sources.find((s) => s.hostId === machineId);
+            const source = project.sources.find((s) => s.hostId === hostId);
             if (!source) throw error;
             thread = await spawn({
               type: "host",
-              hostId: machineId,
+              hostId,
               workspace: { type: "unmanaged", path: source.path },
             });
           }
@@ -1437,6 +1458,9 @@ export default async function plugin(bb: BbPluginApi) {
           await bb.sdk.threads.open({ threadId: thread.id, file: null }).catch(() => undefined);
         }
         const started = (await withMachines([describeThread(thread)]))[0];
+        // Right after spawn the thread's environment may not be resolvable yet,
+        // so withMachines reports machine: null; use the host we spawned on.
+        if (hostName && !started.machine) started.machine = hostName;
         return JSON.stringify(
           shouldFocus
             ? { started }
