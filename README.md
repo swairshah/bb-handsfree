@@ -12,6 +12,8 @@ you.
 
    ```sh
    cd bb-handsfree
+   nvm install
+   nvm use
    npm install
    bb plugin install . --yes
    bb plugin config handsfree set openaiApiKey <your-openai-key>
@@ -157,6 +159,11 @@ never leaves the bb server, and no audio is stored by the plugin.
 ---
 
 ## For developers
+
+Use Node.js **22.23.4** (`nvm install && nvm use`); `.nvmrc` pins the
+development/test runtime. `engines.node` also permits patched 24.x and 26.x
+runtimes. See the [October 2026 Node security audit](docs/node-security-2026-10.md)
+for exposure and the separate BB host runtime requirement.
 
 Architecture: bb's plugin frontend runs in a real browser context, so mic
 capture and playback live in `app.tsx` (getUserMedia + RTCPeerConnection +
