@@ -132,6 +132,19 @@ test("desktop calls retain the original focus tool and exclude mobile-only contr
     assert.match(lookup.description, /Call silently/);
     assert.match(lookup.description, /speak only after its result/);
   }
+  assert.match(startThread.description, /faithfully synthesize their explicit request and relevant conversation context/);
+  assert.match(startThread.description, /without inventing facts or expanding scope/);
+  assert.doesNotMatch(startThread.description, /dictated/);
+  assert.match(startThread.description, /use the default when it is available and suitable/);
+  assert.match(startThread.description, /only when there is no usable default or the choice materially affects the task/);
+  assert.doesNotMatch(startThread.description, /ask one short question instead of guessing/);
+  assert.doesNotMatch(startThread.parameters.properties.prompt.description, /verbatim/);
+  assert.match(startThread.parameters.properties.prompt.description, /faithfully synthesized/);
+  assert.match(startThread.parameters.properties.prompt.description, /do not invent facts or expand scope/);
+  assert.deepEqual(Object.keys(startThread.parameters.properties), ["project_id", "prompt", "title", "machine_id", "provider_id", "model"]);
+  const readThread = desktop.find(tool => tool.name === "read_thread") as any;
+  assert.match(readThread.description, /latest assistant output only, not the full conversation history/);
+  assert.deepEqual(readThread.parameters, { type: "object", properties: { thread_id: { type: "string" } }, required: ["thread_id"] });
   assert.match(threadViewInstructions(false), /navigates to the requested thread/);
   assert.match(threadViewInstructions(true), /do not navigate away/);
   assert.deepEqual(toolSchemas(), desktop);
@@ -298,6 +311,90 @@ test("start_thread preserves project provider and model defaults when no overrid
     assert.equal("executionInputSources" in spawned, false);
     assert.equal(harness.inspection.sdk.callsTo("providers.list").length, 0);
     assert.equal(harness.inspection.sdk.callsTo("providers.models").length, 0);
+  } finally { await harness.lifecycle.dispose(); }
+});
+
+test("built-in prompt and start_thread guidance agree on prompt synthesis and machine choice", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "handsfree" });
+  try {
+    await plugin(bb);
+    const { defaultContent } = await harness.behavior.callRpc("getPrompt", null) as { defaultContent: string };
+    const startThread = toolSchemas().find(tool => tool.name === "start_thread") as any;
+    const promptParam = startThread.parameters.properties.prompt.description;
+    assert.doesNotMatch(defaultContent, /Never invent prompts/);
+    assert.match(defaultContent, /Compose prompts, titles, and messages faithfully from the user's explicit request and relevant conversation context/);
+    assert.match(defaultContent, /do not invent facts, expand scope or add commitments/);
+    assert.match(defaultContent, /Ask one short question only when missing information materially changes the action/);
+    for (const guidance of [defaultContent, promptParam]) assert.match(guidance, /exact words only when they ask/);
+    for (const guidance of [defaultContent, startThread.description, promptParam]) {
+      assert.doesNotMatch(guidance, /dictated/);
+      assert.doesNotMatch(guidance, /several connected machines/);
+    }
+    for (const guidance of [defaultContent, startThread.description]) {
+      assert.match(guidance, /only when there is no usable default or the choice materially affects the task/);
+    }
+  } finally { await harness.lifecycle.dispose(); }
+});
+
+test("a saved custom prompt stays active when the built-in default changes", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "handsfree" });
+  const custom = "You are Aide. Never invent prompts, titles, or messages on the user's behalf.";
+  try {
+    await plugin(bb);
+    await harness.behavior.callRpc("setPrompt", { content: custom, source: "user", note: null });
+    const prompt = await harness.behavior.callRpc("getPrompt", null) as { content: string; defaultContent: string };
+    assert.equal(prompt.content, custom);
+    assert.notEqual(prompt.defaultContent, custom);
+    assert.match(prompt.defaultContent, /Compose prompts, titles, and messages faithfully/);
+  } finally { await harness.lifecycle.dispose(); }
+});
+
+test("start_thread passes a synthesized prompt unchanged and uses the project default machine", async () => {
+  const captured: { spawned?: Record<string, unknown> } = {};
+  const { bb, harness } = createFakePluginHost({ pluginId: "handsfree", sdk: {
+    projects: fakeProjectsSdk,
+    hosts: fakeHostsSdk,
+    threads: {
+      spawn: async (args: unknown) => {
+        captured.spawned = args as Record<string, unknown>;
+        return makeThreadResponse({ id: "synth-thread", projectId: "project", providerId: "codex" });
+      },
+      open: async () => ({ delivered: 1 }),
+    },
+  } as any });
+  const prompt = "Add CSV export to the reports page.\n\nKeep the existing column order; the date format is still undecided.";
+  try {
+    await plugin(bb);
+    const result = await harness.behavior.callRpc("runTool", {
+      name: "start_thread", args: { prompt, title: "CSV export" }, threadId: null, projectId: "project",
+    }) as any;
+    assert.equal(result.status, "success", result.output);
+    assert.equal(harness.inspection.sdk.callsTo("threads.spawn").length, 1);
+    assert.equal(captured.spawned?.prompt, prompt);
+    assert.equal(captured.spawned?.title, "CSV export");
+    assert.equal(captured.spawned?.projectId, "project");
+    assert.deepEqual(captured.spawned?.environment, { type: "project-default" });
+  } finally { await harness.lifecycle.dispose(); }
+});
+
+test("read_thread returns only the latest assistant output", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "handsfree", sdk: {
+    threads: {
+      get: async () => makeThreadResponse({ id: "thread-a", projectId: "project", providerId: "codex" }),
+      output: async () => ({ output: "Latest reply." }),
+    },
+  } as any });
+  try {
+    await plugin(bb);
+    const result = await harness.behavior.callRpc("runTool", {
+      name: "read_thread", args: { thread_id: "thread-a" }, threadId: null, projectId: null,
+    }) as any;
+    assert.equal(result.status, "success", result.output);
+    const body = JSON.parse(result.output);
+    assert.equal(body.lastAssistantOutput, "Latest reply.");
+    assert.equal(body.lastOutcome, null);
+    assert.equal(harness.inspection.sdk.callsTo("threads.output").length, 1);
+    assert.equal(harness.inspection.sdk.callsTo("threads.events.list").length, 0);
   } finally { await harness.lifecycle.dispose(); }
 });
 
