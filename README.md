@@ -67,6 +67,27 @@ A voice session is shared across all your bb windows and devices: the sidebar
 shows a live voice bar (with which device the session came through), and any
 window can pick it up or stop it.
 
+For host chrome styled by other plugins, the frontend mirrors this client's
+call state onto `<html>`: `data-handsfree-voice` is `connecting`, `live` or
+`muted` (absent when idle), and `data-handsfree-voice-activity` is `you` or
+`aide` while someone has the floor. Activity is tracked only by the window that
+owns the call, and `you` is never set while muted or while the mic is paused.
+These attributes are display-only. `/plugins/handsfree/sessions/live` opens the
+Handsfree page on the active call's transcript.
+
+`/plugins/handsfree/sessions/start` starts a call only if the backend knows of
+no active call: it keeps a ledger of every call until its owner reports it ended
+(idle presence or `session.stopped`), the user ends it with **End it**, or an
+abandoned reservation is released, and grants a reservation only while the
+ledger is empty. **End it** clears the ledger and sends a stop without waiting
+for the owner, so an owner that cannot be reached may keep its call running. If a call is in the way, the page opens its transcript
+when it is known, and offers **Take over** or **End it** when it is not (for
+example after a backend restart, or when its owner vanished without ending).
+Missing or late call status is never treated as idle. The ordinary Start
+buttons are unchanged: they take over any other call, so pressing one in a
+window that has not yet heard about a call elsewhere (up to one ~10 s presence
+heartbeat after the window opens) ends that call.
+
 ## Mobile views beside the call
 
 On mobile, “show that thread” opens a drawer without leaving the voice call.

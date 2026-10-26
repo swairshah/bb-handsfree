@@ -35,6 +35,12 @@ export const MIGRATIONS = [
       content TEXT NOT NULL
     )`,
   `ALTER TABLE usage_events ADD COLUMN duration_seconds INTEGER NOT NULL DEFAULT 0`,
+  // Call ledger: every call not yet positively ended (see call-ledger.ts).
+  `CREATE TABLE IF NOT EXISTS active_calls (
+      nonce TEXT PRIMARY KEY,
+      phase TEXT NOT NULL,
+      updated_at INTEGER NOT NULL
+    )`,
 ];
 
 // USD per 1M tokens for the gpt-realtime family (openai.com/api/pricing,

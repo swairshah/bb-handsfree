@@ -24,11 +24,13 @@ import { SessionsPanel } from "./ui/sessions-panel";
 import { viewWorkspace } from "./shared/view-workspace";
 import { COMPANION_TAB, CompanionTab, THREAD_WORKSPACE_ACTION } from "./ui/companion";
 import { AudioSettings, BehaviorSettings, ModelsSettings, ShortcutsSettings } from "./ui/settings-sections";
+import { PresenceSync, usePresenceSync } from "./ui/presence-sync";
 import { cn } from "@/lib/utils";
 import { AUDIO_DEVICE_STORAGE_KEY } from "./shared/audio-devices";
 import { MicIcon, StopIcon, WaveformIcon, useCallElapsed } from "./ui/voice-chrome";
 import { matchShortcut, shortcutLabel } from "./shared/shortcuts";
 import { MAC, SHORTCUT_STORAGE_KEY, shortcutStore, useShortcutSync, useShortcuts } from "./shared/shortcut-store";
+import { publishVoiceState } from "./voice/dom-state";
 import "./app.css";
 
 function AideVoiceButton() {
@@ -67,27 +69,11 @@ function AideVoiceButton() {
   const toggleHint = shortcutLabel(shortcuts.toggle, MAC);
   const muteHint = shortcutLabel(shortcuts.mute, MAC);
 
-  // Global exclusivity: when any window starts a call, all others stop theirs.
-  useRealtime("voice-call", (payload) => {
-    const nonce = (payload as { nonce?: unknown } | null)?.nonce;
-    if (typeof nonce === "string") voiceAgent.onCallStarted(nonce);
-  });
-
-  // CLI mute control: bb handsfree mute|unmute broadcasts on this channel.
-  useRealtime("voice-mute", (payload) => {
-    const muted = (payload as { muted?: unknown } | null)?.muted;
-    if (typeof muted === "boolean") voiceAgent.setMuted(muted);
-  });
-
   // Cross-surface presence: mirror a call owned by another realm so this pill
   // reflects it, and relay stop/mute back to whichever realm owns the call.
-  useRealtime("voice-presence", (payload) => voiceAgent.ingestPresence(payload));
-  useRealtime("voice-command", (payload) => voiceAgent.applyVoiceCommand(payload));
-  useRealtime("voice-presence-query", () => voiceAgent.answerPresenceQuery());
-
-  // Catch up immediately when this surface mounts (e.g. a realm rebuilt after
-  // navigation), rather than waiting up to a heartbeat to learn a call is live.
-  useEffect(() => voiceAgent.requestPresence(), []);
+  // Exclusivity (voice-call) and CLI mute ride the same single holder.
+  // The window-lifetime overlay normally holds this; see presence-sync.tsx.
+  usePresenceSync();
 
   // Thread-event notifications (digested; disabled via `notifications` setting).
   useRealtime("aide-thread-event", (payload) => {
@@ -421,6 +407,12 @@ export default definePluginApp((app) => {
     description: "Adds a persistent voice control bar above the thread list.",
     component: ThreadListWithVoiceBar,
   });
+  // One presence listener for the window's lifetime, so mirrored call state
+  // (and the root attributes below) stay current on routes with no composer or
+  // Handsfree page. Feature-detected: older hosts keep the surface fallback.
+  if (typeof app.slots.experimental_appOverlay === "function") {
+    app.slots.experimental_appOverlay({ id: "presence-sync", component: PresenceSync });
+  }
   // The session deliberately outlives any component, so tie it to the plugin
   // frontend generation instead: on reload/disable the old bundle's singleton
   // would otherwise keep a zombie WebRTC call no button controls.
@@ -447,8 +439,11 @@ export default definePluginApp((app) => {
       // a hard reload (Cmd+R) leaves the previous page holding the input device,
       // so the fresh page enumerates zero microphones until the OS reclaims it.
       window.addEventListener("pagehide", () => voiceAgent.stop(), { signal });
-      signal.addEventListener("abort", () => voiceAgent.stop());
-      return () => voiceAgent.stop();
+      // Display-only call state on <html> for host chrome styled by other plugins.
+      const unpublish = publishVoiceState(document.documentElement, voiceAgent);
+      const dispose = () => { voiceAgent.stop(); unpublish(); };
+      signal.addEventListener("abort", dispose);
+      return dispose;
     },
   });
 });

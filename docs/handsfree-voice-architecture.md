@@ -63,6 +63,44 @@ surface "broadcasts" by calling an RPC that publishes.
 Coarse only: who's-speaking isn't broadcast (too chatty); it shows on the owner
 surface.
 
+## Call ledger (start-if-idle)
+
+Presence is advisory: a fresh realm sees "idle" until an owner answers, and an
+unanswered query proves nothing. Every call passes through the backend's
+`createCall`, and the backend is single-threaded, so it tracks calls there:
+an `active_calls` SQLite table of every call not yet ended or explicitly
+cleared (`server/call-ledger.ts`). It is scoped to one backend; it is not a
+cross-process lock.
+
+- Added by `reserveCall`, by unreserved `createCall`, and by any non-idle
+  presence (so a surviving second call is tracked too).
+- Removed only by end evidence from the owner (idle presence, a
+  `session.stopped` event), by `forceStop`, or by `releaseCall` of an abandoned
+  reservation. Heartbeat age never removes an entry.
+- `forceStop` (**End it**) is an override, not proof the call ended: it clears
+  the entry and broadcasts a best-effort stop without the owner's
+  acknowledgement. It does not close the owner's peer connection. An
+  unreachable owner may stay live, and its next heartbeat re-adds the entry; a
+  reservation granted in between can start a second call.
+- Entries restored after a backend restart report `unknown` until renewed.
+  A ledger read or write failure disables reservations for that process.
+- `reserveCall` succeeds only when the ledger is empty (or holds only this
+  nonce). A reserved `createCall` re-checks that it is the sole entry at entry,
+  again immediately before the paid exchange (after config, credential and
+  catalog lookups), and again before announcing `voice-call`; otherwise it fails with "Another
+  call started first." and the client closes its connection without applying
+  the answer.
+- Explicit Start remains unreserved and keeps takeover semantics, but any
+  `createCall` whose nonce cannot be durably recorded fails before the paid
+  exchange, so the ledger never misses a running call it accepted.
+- `voice-call` (exclusivity), `voice-mute`, presence, commands and queries are
+  all held by the single window-lifetime presence holder (`ui/presence-sync.tsx`),
+  so a reachable call owned by the Handsfree page or any other surface stops on
+  takeover.
+
+Remaining gap: if a durable ledger write fails and the backend restarts before
+the owner's next heartbeat, that call is missing from the restored ledger.
+
 ## Client, device, and realtime scope
 
 `bb.realtime.publish` reaches "every connected client" of one plugin backend —

@@ -19,6 +19,7 @@ import {
 import { createConfigStore, exposedPluginCommands, LAST_REALTIME_AUTH_KEY } from "./server/config.ts";
 import { createCredentials } from "./server/credentials.ts";
 import { createCall, type CreateCallDeps } from "./server/realtime-call.ts";
+import { createCallLedger, UNKNOWN_CONFLICT } from "./server/call-ledger.ts";
 import { registerHandsfreeCli } from "./server/cli.ts";
 import { liveThreads } from "./server/live-threads.ts";
 import { registerThreadNotifications } from "./server/notifications.ts";
@@ -63,6 +64,13 @@ export const rpcContract = defineRpcContract({
         mobile: z.boolean().optional(),
         /** Unique per call; broadcast so every other window ends its session. */
         nonce: z.string().min(1),
+        /**
+         * Set by a reserved start (reserveCall). The call proceeds only while
+         * this nonce is the ledger's sole entry, checked before the paid
+         * exchange and again before it ends other calls. Unset: an explicit
+         * Start, which keeps its takeover semantics.
+         */
+        reserved: z.boolean().optional(),
       })
       .strict(),
     output: z
@@ -259,6 +267,24 @@ export const rpcContract = defineRpcContract({
     output: z.object({ ok: z.literal(true) }).strict(),
   },
   /**
+   * Reserve the right to start a call only if no call is active anywhere this
+   * backend serves. Atomic (synchronous check-and-set). Any ledger entry, even
+   * one restored after a restart, is a conflict: missing evidence is unknown,
+   * never idle. Explicit takeover stays on the unreserved Start path.
+   */
+  reserveCall: {
+    input: z.object({ nonce: z.string().min(1) }).strict(),
+    output: z.object({
+      ok: z.boolean(),
+      conflict: z.object({ nonce: z.string().nullable(), phase: z.enum(["reserved", "connecting", "live", "muted", "unknown"]) }).strict().nullable(),
+    }).strict(),
+  },
+  /** Drop a reservation whose start was abandoned before it announced idle. */
+  releaseCall: {
+    input: z.object({ nonce: z.string().min(1) }).strict(),
+    output: z.object({ ok: z.literal(true) }).strict(),
+  },
+  /**
    * Relay a control intent (stop/mute/unmute) from a surface that does NOT own
    * the call to the realm that does. Only the owner (matching nonce) acts on it.
    */
@@ -286,11 +312,13 @@ export const rpcContract = defineRpcContract({
     }).strict(),
   },
   /**
-   * End a call authoritatively, without needing its owner realm to act — the
-   * owner may be a frozen, backgrounded mobile webview that can no longer receive
-   * commands. Marks the session stopped (so the list stops showing it live) and
-   * broadcasts idle + a stop so every surface clears and the owner tears down if
-   * it ever thaws. This is what makes stop reliable against the navigation zombie.
+   * End a call without needing its owner realm to act — the owner may be a
+   * frozen, backgrounded mobile webview that can no longer receive commands.
+   * Clears the call ledger, marks the session stopped (so the list stops showing
+   * it live) and broadcasts idle + a best-effort stop so every surface clears and
+   * the owner tears down if it receives it. It does not close the peer
+   * connection or wait for the owner: an unreachable owner may keep running,
+   * and its next heartbeat re-adds it to the ledger.
    */
   forceStop: {
     input: z.object({ nonce: z.string().min(1) }).strict(),
@@ -380,6 +408,7 @@ Rules:
 export default async function plugin(bb: BbPluginApi) {
   const db = bb.storage.database();
   bb.storage.migrate(db, MIGRATIONS);
+  const ledger = createCallLedger(db, bb.log);
 
   // The API key is the ONE declarative setting: secrets must live here to get
   // 0600-file storage that never touches the db or the frontend. Everything
@@ -447,6 +476,7 @@ export default async function plugin(bb: BbPluginApi) {
     rememberRealtimeAuth(mechanism) {
       void bb.storage.kv.set(LAST_REALTIME_AUTH_KEY, mechanism).catch(() => undefined);
     },
+    ledger,
   };
 
   bb.rpc.register(rpcContract, {
@@ -565,6 +595,7 @@ export default async function plugin(bb: BbPluginApi) {
     async logEvent({ sessionId, kind, payload }) {
       const ts = Date.now();
       const id = insertSessionEvent(db, sessionId, kind, payload, ts);
+      if (kind === "session.stopped") ledger.end(sessionId);
       // Both views describe this exact persisted event, including client/session
       // and tool call identity. Client-handled tools must be visible here too.
       const entry = sessionEventLog({ id, ts, sessionId, kind, payload });
@@ -573,7 +604,21 @@ export default async function plugin(bb: BbPluginApi) {
       return { ok: true as const };
     },
     async publishPresence({ nonce, phase, startedAt, client, realm }) {
+      if (phase === "idle") ledger.end(nonce);
+      else ledger.set(nonce, phase);
       bb.realtime.publish("voice-presence", { nonce, phase, startedAt, client, realm });
+      return { ok: true as const };
+    },
+    async reserveCall({ nonce }) {
+      // Synchronous from check to write: no other RPC can interleave.
+      const conflict = ledger.conflict(nonce);
+      if (conflict) return { ok: false, conflict };
+      // A failed write leaves no durable reservation: fail closed.
+      if (!ledger.reserve(nonce)) return { ok: false, conflict: UNKNOWN_CONFLICT };
+      return { ok: true, conflict: null };
+    },
+    async releaseCall({ nonce }) {
+      ledger.end(nonce);
       return { ok: true as const };
     },
     async requestPresence() {
@@ -598,6 +643,8 @@ export default async function plugin(bb: BbPluginApi) {
       return { views, preference: (await readConfig()).mobileViewBehavior };
     },
     async forceStop({ nonce }) {
+      // An explicit override, not evidence the call ended (see the contract).
+      ledger.end(nonce);
       // Durable end-marker so listSessions stops showing it live even if the
       // owner realm never logs its own session.stopped (count > 0 is enough).
       insertSessionEvent(db, nonce, "session.stopped", { _forced: true });

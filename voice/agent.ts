@@ -11,6 +11,7 @@ import {
   type AudioDevicePreferences,
 } from "../shared/audio-devices.ts";
 import { actionStatus } from "../shared/session-events.ts";
+import { CALL_SUPERSEDED, type CallConflict } from "../shared/call-reservation.ts";
 import { ViewWorkspace, viewWorkspace } from "../shared/view-workspace.ts";
 import { identityTag, clientDescriptor, deviceSummary } from "../shared/client-identity.ts";
 import { dispatchToolCall, type Bindings, type RpcClient } from "./tool-runner.ts";
@@ -27,6 +28,10 @@ import {
 export type { Bindings } from "./tool-runner.ts";
 
 export type { VoiceState, VoiceCommandAction } from "./presence.ts";
+
+export type StartIfIdleResult =
+  | { ok: true; nonce: string }
+  | { ok: false; conflict: CallConflict };
 /** Who currently has the floor during a live call, for the "listening" UI. */
 export type VoiceActivity = "you" | "aide" | "idle";
 
@@ -90,6 +95,13 @@ export class VoiceAgent {
   private session: SessionHandle | null = null;
   private listeners = new Set<() => void>();
   private bindings: Bindings | null = null;
+  /**
+   * Window-lifetime RPC clients for presence traffic only (publish, heartbeat,
+   * query replies, relayed commands, force-stop), so an owner keeps announcing
+   * its call on routes with no composer or Handsfree page bound. Starting a
+   * call and running tools still require `bindings`.
+   */
+  private presenceRpcs: { rpc: RpcClient }[] = [];
   private nonce: string | null = null;
   private storage = browserStorage();
   private audioPreferences: AudioDevicePreferences =
@@ -145,7 +157,7 @@ export class VoiceAgent {
    * the one live call (see voice/presence.ts).
    */
   private readonly presence = new PresenceChannel({
-    rpc: () => this.bindings?.rpc ?? null,
+    rpc: () => this.presenceRpc(),
     localNonce: () => this.nonce,
     hasLocalCall: () => this.hasLocalCall(),
     localPhase: () => this.state,
@@ -266,6 +278,19 @@ export class VoiceAgent {
 
   readonly getAudioPreferences = (): AudioDevicePreferences => this.audioPreferences;
 
+  /** Supply a presence transport for this realm; returns its release. */
+  providePresenceRpc(rpc: RpcClient): () => void {
+    // One entry per registration: holders may share one RPC client, and each
+    // release must remove only its own entry. Releasing twice is a no-op.
+    const registration = { rpc };
+    this.presenceRpcs.push(registration);
+    return () => { this.presenceRpcs = this.presenceRpcs.filter(item => item !== registration); };
+  }
+
+  private presenceRpc(): RpcClient | null {
+    return this.bindings?.rpc ?? this.presenceRpcs[0]?.rpc ?? null;
+  }
+
   bind(bindings: Bindings) { return this.registerBindings(bindings, false); }
   bindFallback(bindings: Bindings) { return this.registerBindings(bindings, true); }
 
@@ -369,6 +394,63 @@ export class VoiceAgent {
   toggle() {
     if (this.state === "idle") void this.start();
     else this.stop();
+  }
+
+  private pendingReservation: Promise<StartIfIdleResult> | null = null;
+
+  /**
+   * Start a call only if the backend ledger confirms none is active anywhere;
+   * otherwise report the call in the way. Never toggles, stops or replaces a
+   * call: a conflict changes nothing here. Concurrent callers share one try.
+   * Explicit takeover is `takeOver()`, the ordinary unreserved Start.
+   */
+  startIfIdle(): Promise<StartIfIdleResult> {
+    const active = this.activeCall();
+    if (active) return Promise.resolve({ ok: false, conflict: active });
+    if (this.pendingReservation) return this.pendingReservation;
+    const attempt = this.reserveAndStart().finally(() => { this.pendingReservation = null; });
+    this.pendingReservation = attempt;
+    return attempt;
+  }
+
+  /** Explicit takeover: start now; exclusivity ends any other call. */
+  takeOver() {
+    if (this.state === "idle") void this.start();
+  }
+
+  /** End a call by nonce without needing its owner to respond (forceStop). */
+  endCall(nonce: string) {
+    if (nonce === this.nonce && this.hasLocalCall()) this.stop();
+    else this.presence.stopRemote(nonce);
+  }
+
+  /** A call this realm positively knows about (local, or a fresh mirror). */
+  private activeCall(): CallConflict | null {
+    const nonce = this.getSessionId();
+    const state = this.getState();
+    return nonce && state !== "idle" ? { nonce, phase: state } : null;
+  }
+
+  private async reserveAndStart(): Promise<StartIfIdleResult> {
+    const unknown: StartIfIdleResult = { ok: false, conflict: { nonce: null, phase: "unknown" } };
+    const rpc = this.bindings?.rpc;
+    if (!rpc) return unknown;
+    const nonce = crypto.randomUUID();
+    let reply: { ok: boolean; conflict: CallConflict | null };
+    try {
+      reply = await rpc.call("reserveCall", { nonce });
+    } catch {
+      return unknown; // the ledger could not be asked: not proof of idle
+    }
+    if (!reply.ok) return { ok: false, conflict: reply.conflict ?? unknown.conflict };
+    // Something may have become active while the reservation was in flight.
+    const active = this.activeCall();
+    if (active || this.state !== "idle" || !this.bindings) {
+      void rpc.call("releaseCall", { nonce }).catch(() => undefined);
+      return active ? { ok: false, conflict: active } : unknown;
+    }
+    void this.start(nonce);
+    return { ok: true, nonce };
   }
 
   private clearConnectWatchdog() {
@@ -749,12 +831,16 @@ export class VoiceAgent {
     this.requestResponse(dc);
   }
 
-  private async start() {
+  /** `reservedNonce`: a nonce already held in the backend ledger (startIfIdle). */
+  private async start(reservedNonce?: string) {
     const bindings = this.bindings;
-    if (!bindings) return;
+    if (!bindings) {
+      if (reservedNonce) void this.presenceRpc()?.call("releaseCall", { nonce: reservedNonce }).catch(() => undefined);
+      return;
+    }
     // Assign the nonce before entering "connecting" so that state's presence
     // broadcast already carries our identity.
-    const nonce = crypto.randomUUID();
+    const nonce = reservedNonce ?? crypto.randomUUID();
     this.nonce = nonce;
     this.setState("connecting");
     this.log("session.started", { ...bindings.context, device: deviceSummary() });
@@ -961,14 +1047,19 @@ export class VoiceAgent {
         sdp: localSdp,
         nonce,
         mobile: clientDescriptor.mobile,
+        ...(reservedNonce ? { reserved: true } : {}),
         ...bindings.context,
       });
       if (this.session?.pc !== pc) return; // stopped while exchanging
       this.liveMode = live; // before the answer lands, so no event is misread
       await pc.setRemoteDescription({ type: "answer", sdp });
     } catch (error) {
+      // stop() closes the peer connection, mic and audio before any answer is
+      // applied, and announces idle so the ledger drops this nonce.
       this.stop();
-      toast.error(`Aide: ${error instanceof Error ? error.message : String(error)}`);
+      const message = error instanceof Error ? error.message : String(error);
+      if (reservedNonce && message.includes(CALL_SUPERSEDED)) toast.info(`Aide: ${CALL_SUPERSEDED}`);
+      else toast.error(`Aide: ${message}`);
     }
   }
 }
